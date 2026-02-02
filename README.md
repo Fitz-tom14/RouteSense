@@ -15,18 +15,26 @@ The project currently includes:
 - Frontend and backend setup
 - A Home page layout implemented on the frontend
 - A backend endpoint providing placeholder data for the Home page
-- A basic health check endpoint
+- Relational database setup using PostgreSQL
+- Database schema management using Flyway
+- A basic health check endpoint that verifies backend and database availability
 
 Development is being carried out incrementally using an Agile vertical slicing approach.
 
 ## Running the Project
 
-Backend (from the backend directory):
+### Database
+From the project root:
+docker compose up -d
+
+### Backend
+From the backend directory:
 mvn spring-boot:run
 
 The backend runs on port 8080.
 
-Frontend (from the frontend directory):
+### Frontend
+From the frontend directory:
 npm install  
 npm run dev  
 
@@ -34,4 +42,4 @@ The frontend runs on the default Vite development port.
 
 ## Methodology
 
-The system is developed iteratively using Agile principles, with each sprint delivering a small vertical slice of functionality spanning the frontend and backend. Further features and data integration will be added in later stages of the project.
+The system is developed iteratively using Agile principles, with functionality delivered in small vertical slices that span the frontend, backend, and database layers. Early slices focus on establishing structure and architecture, with later slices introducing persistence, logic, and data integration.
