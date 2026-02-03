@@ -2,7 +2,7 @@ function BottomNav() {
   const navItems = [
     { name: 'Home', active: true },
     { name: 'Map', active: false },
-    { name: 'Reports', active: false },
+    { name: 'Routes', active: false },
     { name: 'Settings', active: false }
   ];
 
