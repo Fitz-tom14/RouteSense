@@ -1,18 +1,22 @@
-package com.routesense.service;
+package com.routesense.application.usecase;
 
-import com.routesense.domain.TransportMode;
-import com.routesense.dto.HomeResponseDto;
-import com.routesense.dto.KpisDto;
-import com.routesense.dto.ModeUsageDto;
-import com.routesense.dto.SummaryDto;
-import org.springframework.stereotype.Service;
+import com.routesense.domain.model.TransportMode;
+import com.routesense.web.dto.HomeResponseDto;
+import com.routesense.web.dto.KpisDto;
+import com.routesense.web.dto.ModeUsageDto;
+import com.routesense.web.dto.SummaryDto;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-@Service
-public class HomeService {
+/**
+ * Use case: Generate home page summary.
+ * Replaces HomeService with explicit use case naming.
+ */
+@Component
+public class GetHomeSummaryUseCase {
 
-    public HomeResponseDto getHome(String location) {
+    public HomeResponseDto execute(String location) {
         String effectiveLocation = (location == null || location.isBlank()) 
             ? "Select location" 
             : location;

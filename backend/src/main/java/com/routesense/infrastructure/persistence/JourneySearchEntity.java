@@ -1,12 +1,15 @@
-package com.routesense.domain;
+package com.routesense.infrastructure.persistence;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
+/**
+ * JPA entity for database persistence.
+ * Contains only database mapping concerns.
+ */
 @Entity
 @Table(name = "journey_search")
-public class JourneySearch {
-
+public class JourneySearchEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -20,7 +23,13 @@ public class JourneySearch {
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
-    public JourneySearch() {
+    public JourneySearchEntity() {
+    }
+
+    public JourneySearchEntity(String origin, String destination, LocalDateTime createdAt) {
+        this.origin = origin;
+        this.destination = destination;
+        this.createdAt = createdAt;
     }
 
     public Long getId() {

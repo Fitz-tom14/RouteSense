@@ -1,6 +1,6 @@
-package com.routesense.dto;
+package com.routesense.web.dto;
 
-import com.routesense.domain.TransportMode;
+import com.routesense.domain.model.TransportMode;
 
 public class ModeUsageDto {
     private TransportMode mode;

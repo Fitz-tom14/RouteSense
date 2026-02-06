@@ -1,4 +1,4 @@
-package com.routesense.dto;
+package com.routesense.web.dto;
 
 public class KpisDto {
     private String avgJourneyTimeText;
