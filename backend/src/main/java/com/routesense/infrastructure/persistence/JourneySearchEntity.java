@@ -4,12 +4,13 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 /**
- * JPA entity for database persistence.
- * Contains only database mapping concerns.
+ * JPA entity used for persisting journey searches
+ * to the database.
  */
 @Entity
 @Table(name = "journey_search")
 public class JourneySearchEntity {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -23,6 +24,7 @@ public class JourneySearchEntity {
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
+    // Required by JPA
     public JourneySearchEntity() {
     }
 

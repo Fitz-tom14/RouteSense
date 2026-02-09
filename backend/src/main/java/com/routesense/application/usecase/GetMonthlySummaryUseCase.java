@@ -8,5 +8,5 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class GetMonthlySummaryUseCase {
-    // TODO: Implement monthly summary generation
+    
 }

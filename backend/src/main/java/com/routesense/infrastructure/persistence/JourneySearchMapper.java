@@ -2,9 +2,9 @@ package com.routesense.infrastructure.persistence;
 
 import com.routesense.domain.model.JourneySearch;
 
+
 /**
- * Maps between domain JourneySearch and JPA JourneySearchEntity.
- * Optional - used if you want explicit mapping logic.
+ * Maps between the domain model and the JPA entity.
  */
 public class JourneySearchMapper {
 

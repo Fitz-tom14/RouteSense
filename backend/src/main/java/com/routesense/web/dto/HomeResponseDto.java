@@ -2,7 +2,12 @@ package com.routesense.web.dto;
 
 import java.util.List;
 
+/**
+ * DTO representing the response data
+ * required by the Home page.
+ */
 public class HomeResponseDto {
+
     private String location;
     private KpisDto kpis;
     private List<ModeUsageDto> modeUsage;

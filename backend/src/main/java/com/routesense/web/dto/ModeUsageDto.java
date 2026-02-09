@@ -1,5 +1,9 @@
 package com.routesense.web.dto;
 
+/**
+ * DTO representing usage information for a transport mode.
+ */
+
 import com.routesense.domain.model.TransportMode;
 
 public class ModeUsageDto {

@@ -1,5 +1,10 @@
 package com.routesense.web.dto;
 
+/**
+ * DTO representing the summary section
+ * displayed on the Home page.
+ */
+
 public class SummaryDto {
     private String title;
     private String content;

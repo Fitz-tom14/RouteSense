@@ -8,5 +8,5 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class GetJourneyHistoryUseCase {
-    // TODO: Implement journey history retrieval
+    
 }

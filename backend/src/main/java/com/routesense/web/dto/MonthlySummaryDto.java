@@ -5,5 +5,5 @@ package com.routesense.web.dto;
  * Placeholder for when monthly endpoint is implemented.
  */
 public class MonthlySummaryDto {
-    // TODO: Define monthly summary structure
+    
 }

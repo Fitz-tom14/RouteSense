@@ -3,8 +3,8 @@ package com.routesense.domain.model;
 import java.time.LocalDateTime;
 
 /**
- * Pure domain model - no JPA/Spring annotations.
- * Represents a journey search concept.
+ * Domain model representing a journey search.
+ * Kept free of framework-specific annotations.
  */
 public class JourneySearch {
     private Long id;
