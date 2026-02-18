@@ -1,19 +1,19 @@
-function BottomNav() {
-  const navItems = [
-    { name: 'Home', active: true },
-    { name: 'Map', active: false },
-    { name: 'Routes', active: false },
-    { name: 'Settings', active: false }
-  ];
+/**
+ * Bottom navigation bar.
+ * Uses activePage to highlight the current page and onNavigate to switch pages.
+ */
+function BottomNav({ activePage, onNavigate }) {
+  const navItems = ["Home", "Map", "Routes", "Settings"];
 
   return (
     <nav className="bottom-nav">
-      {navItems.map((item) => (
-        <button 
-          key={item.name}
-          className={`nav-item ${item.active ? 'active' : ''}`}
+      {navItems.map((name) => (
+        <button
+          key={name}
+          className={`nav-item ${activePage === name ? "active" : ""}`}
+          onClick={() => onNavigate(name)}
         >
-          {item.name}
+          {name}
         </button>
       ))}
     </nav>

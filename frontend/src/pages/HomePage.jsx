@@ -5,7 +5,7 @@ import SummaryCard from '../components/SummaryCard';
 import BottomNav from '../components/BottomNav';
 import '../styles/home.css';
 
-function HomePage() {
+function HomePage({ activePage, onNavigate }) {
   return (
     <div className="home-page">
       <TopBar />
@@ -32,11 +32,11 @@ function HomePage() {
         </div>
         
         <div className="action-button-container">
-          <button className="view-map-button">View Map</button>
+          <button className="view-map-button" onClick={() => onNavigate("Map")}>View Map</button>
         </div>
       </main>
       
-      <BottomNav />
+      <BottomNav activePage={activePage} onNavigate={onNavigate} />
     </div>
   );
 }

@@ -1,0 +1,5 @@
+backend/src/main/java/com/routesense/application/port/MapDataSource.java - public decl: 
+backend/src/main/java/com/routesense/domain/model/Departure.java - public decl: 
+backend/src/main/java/com/routesense/domain/model/TransportStop.java - public decl: 
+backend/src/main/java/com/routesense/web/dto/MapStopDto.java - public decl: 
+backend/src/main/java/com/routesense/web/dto/DepartureDto.java - public decl: 
