@@ -1,0 +1,63 @@
+/* Full page centering */
+.login-page {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+}
+
+/* Card matching your KPI panels */
+.login-card {
+  width: 380px;
+  padding: 32px;
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  text-align: center;
+}
+
+/* RouteSense title */
+.login-logo {
+  margin-bottom: 8px;
+}
+
+/* Form layout */
+.login-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+/* Inputs styled like site controls */
+.login-card input {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  font-size: 14px;
+}
+
+/* Button consistent with UI */
+.login-card button {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 6px;
+  border: none;
+  background: #2f80ed;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* Hover feedback */
+.login-card button:hover {
+  background: #1c6ddc;
+}
+
+/* Error message */
+.error {
+  color: #d64545;
+  font-size: 13px;
+  text-align: left;
+}
