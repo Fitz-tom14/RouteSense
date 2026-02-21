@@ -1,0 +1,341 @@
+.routes-page {
+  padding: 16px;
+  padding-bottom: 90px; /* space for bottom nav */
+  background: radial-gradient(circle at top, #f5f8ff 0%, #f2f6f3 50%, #f7f7fb 100%);
+}
+
+.routes-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.routes-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.routes-subtitle {
+  font-size: 14px;
+  color: #5f6b7a;
+}
+
+.routes-layout {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .routes-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.routes-left,
+.routes-right {
+  min-width: 0;
+}
+
+.input-card {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(20, 30, 60, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(15, 30, 60, 0.06);
+}
+
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(250, 252, 255, 0.9);
+  border: 1px solid rgba(20, 30, 60, 0.10);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.pin {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.pin-green {
+  color: #1f8a4c; /* Ireland-ish green */
+}
+
+.pin-red {
+  color: #d14a4a;
+}
+
+.text-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 15px;
+}
+
+.go-btn {
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #1f8a4c;
+  color: white;
+  box-shadow: 0 10px 18px rgba(31, 138, 76, 0.18);
+}
+
+.go-btn:hover {
+  filter: brightness(0.97);
+}
+
+.section-title {
+  margin: 14px 2px 10px;
+  font-weight: 800;
+  color: #2a3340;
+}
+
+.empty-state {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px dashed rgba(20, 30, 60, 0.18);
+  background: rgba(255, 255, 255, 0.65);
+  color: #5f6b7a;
+}
+
+.routes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.route-card {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(20, 30, 60, 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 28px rgba(15, 30, 60, 0.06);
+}
+
+.route-card.recommended {
+  border-color: rgba(31, 138, 76, 0.35);
+  box-shadow: 0 12px 32px rgba(31, 138, 76, 0.12);
+}
+
+.route-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(20, 30, 60, 0.06);
+  background: linear-gradient(90deg, rgba(31, 138, 76, 0.08), rgba(255, 255, 255, 0.0));
+}
+
+.route-legs {
+  font-size: 18px;
+}
+
+.legs-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.leg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.leg-arrow {
+  color: #97a3b3;
+  font-weight: 800;
+}
+
+.badge {
+  font-size: 12px;
+  font-weight: 800;
+  color: white;
+  background: #1f8a4c;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
+.route-bottom {
+  padding: 12px;
+}
+
+.route-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.metric {
+  background: rgba(250, 252, 255, 0.9);
+  border: 1px solid rgba(20, 30, 60, 0.08);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.metric-value {
+  font-weight: 900;
+  font-size: 16px;
+  color: #243041;
+}
+
+.metric-label {
+  font-size: 12px;
+  color: #6b7788;
+  margin-top: 2px;
+}
+
+.route-notes {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #5f6b7a;
+}
+
+.panel {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(20, 30, 60, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 10px 28px rgba(15, 30, 60, 0.06);
+}
+
+.panel-tabs {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-weight: 800;
+}
+
+.tab {
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+
+.tab.active {
+  background: rgba(31, 138, 76, 0.10);
+  color: #1f8a4c;
+}
+
+.tab.muted {
+  color: #8a95a6;
+}
+
+.panel-empty {
+  padding: 14px;
+  color: #6b7788;
+  border-radius: 12px;
+  border: 1px dashed rgba(20, 30, 60, 0.18);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.view-map-btn {
+  margin-top: 12px;
+  width: 100%;
+  border: 1px solid rgba(20, 30, 60, 0.10);
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.view-map-btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* Bars */
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 38px 1fr 120px;
+  align-items: center;
+  gap: 10px;
+}
+
+.bar-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.mini-star {
+  font-size: 14px;
+  color: #1f8a4c;
+  font-weight: 900;
+}
+
+.bar-track {
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(20, 30, 60, 0.08);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(40, 110, 220, 0.75);
+}
+
+.bar-fill.bar-rec {
+  background: rgba(31, 138, 76, 0.85);
+}
+
+.bar-right {
+  text-align: right;
+}
+
+.bar-time {
+  font-weight: 900;
+  color: #243041;
+  font-size: 13px;
+}
+
+.bar-co2 {
+  font-size: 12px;
+  color: #6b7788;
+  margin-top: 2px;
+}
+
+.legend {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #6b7788;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.legend-dot.rec {
+  background: rgba(31, 138, 76, 0.85);
+}
+
+.legend-dot.normal {
+  background: rgba(40, 110, 220, 0.75);
+}
