@@ -26,3 +26,6 @@ pnpm-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
+
+backend/src/main/resources/gtfs/google_transit.zip/stop_times.txt
+backend/src/main/resources/gtfs/google_transit.zip/shapes.txt
