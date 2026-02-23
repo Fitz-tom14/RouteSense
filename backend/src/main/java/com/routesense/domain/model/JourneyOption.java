@@ -4,6 +4,7 @@ import java.util.List;
 
 /**
  * Domain response model for a candidate journey between two stops.
+ * Contains the list of stops in the journey, total duration, number of transfers, a score for ranking, and whether it's recommended.
  */
 public class JourneyOption {
     private final List<Stop> stops;

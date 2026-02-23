@@ -2,12 +2,14 @@ package com.routesense.infrastructure.gtfs;
 
 import com.routesense.domain.model.Stop;
 import com.routesense.domain.model.StopEdge;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.stereotype.Component;
+import org.slf4j.Logger; //loggging events at run time, for debugging and monitoring purposes
+import org.slf4j.LoggerFactory; //used to create Logger instances for specific classes, allowing for organized and contextual logging output
+import org.springframework.core.io.ClassPathResource; //used to access internal files from the application's classpath.
+import org.springframework.stereotype.Component; //marks this class as a Spring-managed component
 
-import jakarta.annotation.PostConstruct;
-import java.io.BufferedReader;
-import java.io.IOException;
+import jakarta.annotation.PostConstruct; //set-up method that runs after the object is ready
+import java.io.BufferedReader; //used for efficient reading of text files line by line
+import java.io.IOException; //
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +28,7 @@ import java.util.Map;
 public class GtfsGraphLoader {
 
     private static final int DEFAULT_EDGE_TIME_SECONDS = 120;
+    private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class);
 
     private Map<String, Stop> stops = Map.of();
     private Map<String, List<StopEdge>> adjacencyList = Map.of();
@@ -160,7 +163,8 @@ public class GtfsGraphLoader {
 
             processTripRows(currentTripRows, aggregatedByLink);
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to load GTFS stop_times.txt", e);
+            LOGGER.warn("GTFS stop_times.txt not found or unreadable; stop graph edges will be empty", e);
+            return Map.of();
         }
 
         Map<String, List<StopEdge>> adjacency = new HashMap<>();
@@ -196,19 +200,21 @@ public class GtfsGraphLoader {
     }
 
     private BufferedReader openGtfsReader(String fileName) throws IOException {
-        InputStream inputStream;
-        ClassPathResource preferred = new ClassPathResource("gtfs/" + fileName);
-        if (preferred.exists()) {
-            inputStream = preferred.getInputStream();
-        } else {
-            ClassPathResource fallback = new ClassPathResource("GTFS_Realtime.zip/" + fileName);
-            if (!fallback.exists()) {
-                throw new IOException("GTFS file not found: " + fileName);
+        String[] candidatePaths = new String[] {
+                "gtfs/" + fileName,
+                "gtfs/google_transit.zip/" + fileName,
+                "GTFS_Realtime.zip/" + fileName
+        };
+
+        for (String candidatePath : candidatePaths) {
+            ClassPathResource candidate = new ClassPathResource(candidatePath);
+            if (candidate.exists()) {
+                InputStream inputStream = candidate.getInputStream();
+                return new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
             }
-            inputStream = fallback.getInputStream();
         }
 
-        return new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
+        throw new IOException("GTFS file not found: " + fileName);
     }
 
     private Map<String, Integer> buildColumnIndex(String headerLine) {

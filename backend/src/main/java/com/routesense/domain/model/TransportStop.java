@@ -18,7 +18,8 @@ public class TransportStop {
         this.latitude = latitude;
         this.longitude = longitude;
         this.mode = mode;
-    }   
+    }
+    
 
     public long getID() { return id; }
     public String getName() { return name; }

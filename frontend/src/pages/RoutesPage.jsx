@@ -1,30 +1,53 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import BottomNav from "../components/BottomNav";
 import "../styles/routes.css";
-import { buildRoutesDijkstra } from "../services/routeEngine";
 
-/**
- * Routes page (Dijkstra version)
- * - User enters Start + End
- * - Click "Go"
- * - We generate route alternatives using Dijkstra on a demo graph
- * - We recommend the "Balanced" option
- */
 function RoutesPage({ activePage, onNavigate }) {
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
+  const [originStopId, setOriginStopId] = useState("");
+  const [destinationStopId, setDestinationStopId] = useState("");
+  const [routes, setRoutes] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const { routes, recommendedId } = useMemo(() => {
-    if (!hasSearched) return { routes: [], recommendedId: null };
-    return buildRoutesDijkstra(start, end);
-  }, [hasSearched, start, end]);
-
-  function handleGo() {
+  async function handleGo() {
     setHasSearched(true);
+    setError("");
+
+    if (!originStopId.trim() || !destinationStopId.trim()) {
+      setRoutes([]);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch("http://localhost:8080/api/journeys/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          originStopId: originStopId.trim(),
+          destinationStopId: destinationStopId.trim(),
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      setRoutes(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setRoutes([]);
+      setError("Unable to load journey options.");
+      console.error("Journey search failed:", e);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const showMissingInput = hasSearched && (!start.trim() || !end.trim());
+  const showMissingInput = hasSearched && (!originStopId.trim() || !destinationStopId.trim());
 
   return (
     <div className="page routes-page">
@@ -40,9 +63,9 @@ function RoutesPage({ activePage, onNavigate }) {
             <label className="input-row">
               <span className="pin pin-green">●</span>
               <input
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-                placeholder="Start (e.g. Eyre Square)"
+                value={originStopId}
+                onChange={(e) => setOriginStopId(e.target.value)}
+                placeholder="Origin stop ID"
                 className="text-input"
               />
             </label>
@@ -50,9 +73,9 @@ function RoutesPage({ activePage, onNavigate }) {
             <label className="input-row">
               <span className="pin pin-red">●</span>
               <input
-                value={end}
-                onChange={(e) => setEnd(e.target.value)}
-                placeholder="End (e.g. Salthill)"
+                value={destinationStopId}
+                onChange={(e) => setDestinationStopId(e.target.value)}
+                placeholder="Destination stop ID"
                 className="text-input"
               />
             </label>
@@ -68,17 +91,18 @@ function RoutesPage({ activePage, onNavigate }) {
             <div className="empty-state">Enter a start and end, then hit Go.</div>
           ) : showMissingInput ? (
             <div className="empty-state">Please enter both Start and End.</div>
+          ) : loading ? (
+            <div className="empty-state">Loading journey options…</div>
+          ) : error ? (
+            <div className="empty-state">{error}</div>
           ) : !routes.length ? (
-            <div className="empty-state">
-              No demo route found. Try: Eyre Square, NUIG, Ceannt Station, Oranmore, Salthill.
-            </div>
+            <div className="empty-state">No journey options found.</div>
           ) : (
             <div className="routes-list">
-              {routes.map((r) => (
+              {routes.map((r, index) => (
                 <RouteCard
-                  key={r.id}
+                  key={`${r.totalDurationSeconds}-${r.transfers}-${index}`}
                   route={r}
-                  isRecommended={r.id === recommendedId}
                 />
               ))}
             </div>
@@ -96,7 +120,7 @@ function RoutesPage({ activePage, onNavigate }) {
             {!routes.length ? (
               <div className="panel-empty">Run a search to compare options.</div>
             ) : (
-              <ComparisonBars routes={routes} recommendedId={recommendedId} />
+              <ComparisonBars routes={routes} />
             )}
           </div>
 
@@ -119,25 +143,22 @@ export default RoutesPage;
 
 /* ------------------------------ UI BITS ------------------------------ */
 
-function RouteCard({ route, isRecommended }) {
-  return (
-    <div className={`route-card ${isRecommended ? "recommended" : ""}`}>
-      <div className="route-top">
-        <div className="route-legs">{renderLegIcons(route.legs)}</div>
+function RouteCard({ route }) {
+  const durationMinutes = Math.round((route.totalDurationSeconds || 0) / 60);
 
-        {isRecommended && <div className="badge">★ Recommended</div>}
+  return (
+    <div className={`route-card ${route.recommended ? "recommended" : ""}`}>
+      <div className="route-top">
+        <div className="route-legs">{renderStops(route.stops)}</div>
+
+        {route.recommended && <div className="badge">★ Recommended</div>}
       </div>
 
       <div className="route-bottom">
         <div className="route-metrics">
           <div className="metric">
-            <div className="metric-value">{route.timeMin} min</div>
+            <div className="metric-value">{durationMinutes} min</div>
             <div className="metric-label">Time</div>
-          </div>
-
-          <div className="metric">
-            <div className="metric-value">{route.co2Kg} kg</div>
-            <div className="metric-label">CO₂</div>
           </div>
 
           <div className="metric">
@@ -146,46 +167,47 @@ function RouteCard({ route, isRecommended }) {
           </div>
         </div>
 
-        <div className="route-notes">{route.notes}</div>
+        <div className="route-notes">{route.stops?.length || 0} stops</div>
       </div>
     </div>
   );
 }
 
-function renderLegIcons(legs) {
-  const icon = (leg) => {
-    if (leg === "BUS") return "🚌";
-    if (leg === "TRAIN") return "🚆";
-    if (leg === "WALK") return "🚶";
-    if (leg === "CYCLE") return "🚲";
-    return "•";
-  };
+function renderStops(stops = []) {
+  const names = stops.map((stop) => stop.name).filter(Boolean);
+
+  if (names.length === 0) {
+    return <div className="legs-row">Route option</div>;
+  }
 
   return (
     <div className="legs-row">
-      {legs.map((leg, i) => (
-        <span key={leg + i} className="leg-item">
-          <span className="leg-icon">{icon(leg)}</span>
-          {i !== legs.length - 1 && <span className="leg-arrow">›</span>}
+      {names.map((name, i) => (
+        <span key={name + i} className="leg-item">
+          <span className="leg-icon">📍</span>
+          <span>{name}</span>
+          {i !== names.length - 1 && <span className="leg-arrow">›</span>}
         </span>
       ))}
     </div>
   );
 }
 
-function ComparisonBars({ routes, recommendedId }) {
-  const maxTime = Math.max(...routes.map((r) => r.timeMin));
+function ComparisonBars({ routes }) {
+  const maxDuration = Math.max(...routes.map((r) => r.totalDurationSeconds || 0));
 
   return (
     <div className="bars">
       {routes.map((r) => {
-        const widthPct = Math.round((r.timeMin / maxTime) * 100);
-        const isRec = r.id === recommendedId;
+        const duration = r.totalDurationSeconds || 0;
+        const widthPct = maxDuration > 0 ? Math.round((duration / maxDuration) * 100) : 0;
+        const isRec = r.recommended;
+        const durationMinutes = Math.round(duration / 60);
 
         return (
-          <div key={r.id} className="bar-row">
+          <div key={`${duration}-${r.transfers}-${r.recommended}`} className="bar-row">
             <div className="bar-left">
-              <span className="bar-icon">{mainModeIcon(r.legs)}</span>
+              <span className="bar-icon">🧭</span>
               {isRec && <span className="mini-star">★</span>}
             </div>
 
@@ -193,13 +215,13 @@ function ComparisonBars({ routes, recommendedId }) {
               <div
                 className={`bar-fill ${isRec ? "bar-rec" : ""}`}
                 style={{ width: `${widthPct}%` }}
-                title={`${r.timeMin} min, ${r.co2Kg} kg CO₂`}
+                title={`${durationMinutes} min, ${r.transfers} transfers`}
               />
             </div>
 
             <div className="bar-right">
-              <div className="bar-time">{r.timeMin} min</div>
-              <div className="bar-co2">{r.co2Kg} kg CO₂</div>
+              <div className="bar-time">{durationMinutes} min</div>
+              <div className="bar-co2">{r.transfers} transfers</div>
             </div>
           </div>
         );
@@ -211,11 +233,4 @@ function ComparisonBars({ routes, recommendedId }) {
       </div>
     </div>
   );
-}
-
-function mainModeIcon(legs) {
-  if (legs.includes("CYCLE")) return "🚲";
-  if (legs.includes("TRAIN")) return "🚆";
-  if (legs.includes("BUS")) return "🚌";
-  return "🧭";
 }

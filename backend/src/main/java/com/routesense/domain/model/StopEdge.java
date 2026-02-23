@@ -2,6 +2,9 @@ package com.routesense.domain.model;
 
 /**
  * Directed edge between two stops with travel time in seconds.
+ * Represents a connection in the routing graph, indicating how long it takes to travel from one stop to another.
+ * 
+ * 
  */
 public class StopEdge {
     private final String fromStopId;
