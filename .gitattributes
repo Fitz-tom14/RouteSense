@@ -1,0 +1,1 @@
+backend/src/main/resources/gtfs/*.txt filter=lfs diff=lfs merge=lfs -text
