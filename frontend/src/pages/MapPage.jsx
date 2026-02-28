@@ -1,65 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
+import { MapContainer, TileLayer } from "react-leaflet";
 import FilterPanel from "../components/FilterPanel";
 import BottomNav from "../components/BottomNav";
-import { fetchStops, fetchDepartures } from "../services/mapApi";
 import "../styles/map.css";
 
 /**
  * Map page:
  * - holds UI state (location, selected modes, live/static)
- * - fetches stops for markers
- * - loads departures when a marker is clicked
+ * - renders the Leaflet map beside the filter panel
  */
 function MapPage({ activePage, onNavigate }) {
   const [location, setLocation] = useState("Galway");
   const [live, setLive] = useState(true);
-
-  // Keep modes simple + aligned with your backend enum TransportMode
   const [selectedModes, setSelectedModes] = useState(["BUS"]);
-  const [stops, setStops] = useState([]);
-  const [error, setError] = useState(null);
-
-  const [selectedStop, setSelectedStop] = useState(null);
-  const [departures, setDepartures] = useState([]);
-  const [loadingDepartures, setLoadingDepartures] = useState(false);
-
-  // Load markers whenever filters change
-  useEffect(() => {
-    fetchStops({ location, modes: selectedModes, live })
-      .then((data) => {
-        setStops(data);
-        setError(null);
-      })
-      .catch((err) => {
-        setStops([]);
-        setError("Backend not reachable");
-      });
-  }, [location, selectedModes, live]);
-
-  async function handleStopClick(stop) {
-    setSelectedStop(stop);
-    setLoadingDepartures(true);
-
-    try {
-      const deps = await fetchDepartures(stop.id, live);
-      setDepartures(deps);
-    } catch {
-      setDepartures([]);
-    } finally {
-      setLoadingDepartures(false);
-    }
-  }
-
-  // Ireland map centers: Galway, Dublin, Cork
-  const locationCenters = {
-    Galway: [53.2740, -9.0498],
-    Dublin: [53.3498, -6.2603],
-    Cork: [51.8985, -8.4756],
-  };
-
-  const mapCenter = useMemo(() => {
-    return locationCenters[location] || locationCenters.Galway;
-  }, [location]);
+  const galwayCenter = [53.2707, -9.0568];
 
   return (
     <div className="map-page">
@@ -76,8 +30,6 @@ function MapPage({ activePage, onNavigate }) {
         </div>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
-
       <div className="map-content">
         <FilterPanel
           selectedModes={selectedModes}
@@ -86,6 +38,19 @@ function MapPage({ activePage, onNavigate }) {
           onChangeLive={setLive}
         />
 
+        <div className="map-wrapper">
+          <MapContainer
+            center={galwayCenter}
+            zoom={13}
+            zoomControl={true}
+            className="leaflet-map"
+          >
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+          </MapContainer>
+        </div>
       </div>
 
       <BottomNav activePage={activePage} onNavigate={onNavigate} />
