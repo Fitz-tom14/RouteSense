@@ -1,5 +1,5 @@
-const AUTH_KEY = "routesense_auth";
-const USERS_KEY = "routesense_users";
+const AUTH_KEY = "routesense_auth"; // Key for storing auth session in localStorage
+const USERS_KEY = "routesense_users"; // Key for storing registered users in localStorage
 
 // Get all registered users from storage
 function getUsers() {

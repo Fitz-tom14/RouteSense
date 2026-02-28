@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import FilterPanel from "../components/FilterPanel";
-import MapView from "../components/MapView";
 import BottomNav from "../components/BottomNav";
 import { fetchStops, fetchDepartures } from "../services/mapApi";
 import "../styles/map.css";
@@ -87,15 +86,6 @@ function MapPage({ activePage, onNavigate }) {
           onChangeLive={setLive}
         />
 
-        <MapView
-          center={mapCenter}
-          stops={stops}
-          selectedStop={selectedStop}
-          departures={departures}
-          loadingDepartures={loadingDepartures}
-          onStopClick={handleStopClick}
-          onClosePopup={() => setSelectedStop(null)}
-        />
       </div>
 
       <BottomNav activePage={activePage} onNavigate={onNavigate} />

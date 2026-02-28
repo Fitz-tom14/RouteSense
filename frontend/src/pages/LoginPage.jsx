@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { login, register } from "../services/auth";
+import { useState } from "react"; // React hook for managing component state
+import { login, register } from "../services/auth";// Import authentication functions from our auth service
 import "../styles/login.css";
 
 function LoginPage({ onLoginSuccess }) {
