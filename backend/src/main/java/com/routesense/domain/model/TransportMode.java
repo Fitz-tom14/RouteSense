@@ -5,8 +5,10 @@ package com.routesense.domain.model;
  */
 public enum TransportMode {
     CAR,
+    WALK,
     BUS,
     BIKE,
     TRAIN,
     TRAM,
+    LUAS,
 }

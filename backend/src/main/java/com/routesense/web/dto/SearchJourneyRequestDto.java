@@ -2,10 +2,13 @@ package com.routesense.web.dto;
 
 /**
  * Request payload for journey search.
+ * Origin can be provided as a stop ID or as geographic coordinates (lat/lon).
  */
 public class SearchJourneyRequestDto {
     private String originStopId;
     private String destinationStopId;
+    private Double originLat;
+    private Double originLon;
 
     public SearchJourneyRequestDto() {
     }
@@ -29,5 +32,21 @@ public class SearchJourneyRequestDto {
 
     public void setDestinationStopId(String destinationStopId) {
         this.destinationStopId = destinationStopId;
+    }
+
+    public Double getOriginLat() {
+        return originLat;
+    }
+
+    public void setOriginLat(Double originLat) {
+        this.originLat = originLat;
+    }
+
+    public Double getOriginLon() {
+        return originLon;
+    }
+
+    public void setOriginLon(Double originLon) {
+        this.originLon = originLon;
     }
 }

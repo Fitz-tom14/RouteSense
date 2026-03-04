@@ -10,11 +10,17 @@ public class StopEdge {
     private final String fromStopId;
     private final String toStopId;
     private final int travelTimeSeconds;
+    private final TransportMode transportMode;
 
     public StopEdge(String fromStopId, String toStopId, int travelTimeSeconds) {
+        this(fromStopId, toStopId, travelTimeSeconds, null);
+    }
+
+    public StopEdge(String fromStopId, String toStopId, int travelTimeSeconds, TransportMode transportMode) {
         this.fromStopId = fromStopId;
         this.toStopId = toStopId;
         this.travelTimeSeconds = travelTimeSeconds;
+        this.transportMode = transportMode;
     }
 
     public String getFromStopId() {
@@ -27,5 +33,9 @@ public class StopEdge {
 
     public int getTravelTimeSeconds() {
         return travelTimeSeconds;
+    }
+
+    public TransportMode getTransportMode() {
+        return transportMode;
     }
 }

@@ -2,6 +2,7 @@ package com.routesense.infrastructure.gtfs;
 
 import com.routesense.domain.model.Stop;
 import com.routesense.domain.model.StopEdge;
+import com.routesense.domain.model.TransportMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
@@ -20,6 +21,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.EnumMap;
 
 
 //Loads all stopd from stops.txt and builds a graph of stop->stop edges with travel times based on stop_times.txt.
@@ -80,7 +82,7 @@ public class GtfsGraphLoader {
             Integer stopLatIdx = columnIndex.get("stop_lat");
             Integer stopLonIdx = columnIndex.get("stop_lon");
 
-            // If any of the required columns are missing, we can’t load stops
+            // If any of the required columns are missing, we cant load stops
             if (stopIdIdx == null || stopNameIdx == null || stopLatIdx == null || stopLonIdx == null) {
                 return result;
             }
@@ -119,6 +121,7 @@ public class GtfsGraphLoader {
     private Map<String, List<StopEdge>> loadEdges(Map<String, Stop> loadedStops) {
         // We build edges by walking stop_times within each trip and measuring time gaps
         Map<String, StopEdgeStats> aggregatedByLink = new HashMap<>();
+        Map<String, TransportMode> tripModeByTripId = loadTripModeByTripId();
 
         // Similar to stops.txt, we look for stop_times.txt in a few different places to be flexible
         try (BufferedReader reader = openGtfsReader("stop_times.txt")) {
@@ -139,6 +142,7 @@ public class GtfsGraphLoader {
             }
 
             String currentTripId = null;
+            TransportMode currentTripMode = null;
             List<StopTimeRow> currentTripRows = new ArrayList<>();
             String line;
             while ((line = reader.readLine()) != null) {
@@ -172,20 +176,22 @@ public class GtfsGraphLoader {
 
                 if (currentTripId == null) {
                     currentTripId = tripId;
+                    currentTripMode = tripModeByTripId.get(tripId);
                 }
 
                 // New trip -> finish the last one
                 if (!currentTripId.equals(tripId)) {
-                    processTripRows(currentTripRows, aggregatedByLink);
+                    processTripRows(currentTripRows, currentTripMode, aggregatedByLink);
                     currentTripRows.clear();
                     currentTripId = tripId;
+                    currentTripMode = tripModeByTripId.get(tripId);
                 }
 
                 currentTripRows.add(new StopTimeRow(stopId, sequence, arrivalSeconds));
             }
 
             // last trip in file
-            processTripRows(currentTripRows, aggregatedByLink);
+            processTripRows(currentTripRows, currentTripMode, aggregatedByLink);
         } catch (IOException e) {
             LOGGER.warn("GTFS stop_times.txt not found or unreadable; stop graph edges will be empty", e);
             return Map.of();
@@ -194,7 +200,12 @@ public class GtfsGraphLoader {
         // Now we have aggregated stats for each stop->stop link, we can build the final adjacency list with average travel times
         Map<String, List<StopEdge>> adjacency = new HashMap<>();
         for (StopEdgeStats stats : aggregatedByLink.values()) {
-            StopEdge edge = new StopEdge(stats.fromStopId(), stats.toStopId(), stats.averageTravelSeconds());
+            StopEdge edge = new StopEdge(
+                    stats.fromStopId(),
+                    stats.toStopId(),
+                    stats.averageTravelSeconds(),
+                    stats.dominantMode()
+            );
             adjacency.computeIfAbsent(edge.getFromStopId(), ignored -> new ArrayList<>()).add(edge);
         }
 
@@ -202,7 +213,11 @@ public class GtfsGraphLoader {
     }
 
     // Takes all the stop times for a single trip, calculates travel times between consecutive stops, and aggregates those times by stop->stop link
-    private void processTripRows(List<StopTimeRow> tripRows, Map<String, StopEdgeStats> aggregatedByLink) {
+    private void processTripRows(
+            List<StopTimeRow> tripRows,
+            TransportMode tripMode,// the mode of transport for this trip, if known, which can be used to enrich the stop edges with mode information
+            Map<String, StopEdgeStats> aggregatedByLink
+    ) {
         if (tripRows.size() < 2) {
             return;
         }
@@ -222,11 +237,114 @@ public class GtfsGraphLoader {
             String key = from.stopId() + "->" + to.stopId();
 
             StopEdgeStats stats = aggregatedByLink.computeIfAbsent(key, ignored -> new StopEdgeStats(from.stopId(), to.stopId()));
-            stats.addObservation(travelSeconds);
+            stats.addObservation(travelSeconds, tripMode);
         }
     }
 
-    // Tries to open a GTFS file from several possible locations within the classpath, returning a BufferedReader if found or throwing an exception if not found
+    // Loads the transport mode for each trip by first loading route modes from routes.txt and then mapping trips to their routes using trips.txt.
+    // This allows us to enrich stop edges with transport mode information when we build them from stop_times.txt.
+    private Map<String, TransportMode> loadTripModeByTripId() {
+        Map<String, TransportMode> routeModeByRouteId = loadRouteModeByRouteId();
+        if (routeModeByRouteId.isEmpty()) {
+            return Map.of();
+        }
+
+        // We read trips.txt to build a map of trip_id to route_id, and then use the route_id to look up the transport mode from the previously loaded route modes.
+        // This gives us a map of trip_id to transport mode that we can use when processing stop_times.txt to assign modes to stop edges.
+        Map<String, TransportMode> tripModeByTripId = new HashMap<>();
+        try (BufferedReader reader = openGtfsReader("trips.txt")) {
+            String header = reader.readLine();
+            if (header == null) {
+                return Map.of();
+            }
+
+            // Build a map of column name to index for easy lookup
+            Map<String, Integer> columnIndex = buildColumnIndex(header);
+            Integer tripIdIdx = columnIndex.get("trip_id");
+            Integer routeIdIdx = columnIndex.get("route_id");
+            if (tripIdIdx == null || routeIdIdx == null) {
+                return Map.of();
+            }
+
+            // Read each line of trips.txt, parse the CSV, and build the trip_id to transport mode mapping using the route_id to look up the mode from the previously loaded route modes.
+            String line;
+            while ((line = reader.readLine()) != null) {
+                List<String> tokens = parseCsvLine(line);
+                String tripId = getValue(tokens, tripIdIdx);
+                String routeId = getValue(tokens, routeIdIdx);
+
+                if (isBlank(tripId) || isBlank(routeId)) {
+                    continue;
+                }
+
+                // Look up the transport mode for this trip's route and store it in the tripModeByTripId map for later use when processing stop_times.txt
+                TransportMode mode = routeModeByRouteId.get(routeId);
+                if (mode != null) {
+                    tripModeByTripId.put(tripId, mode);
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("GTFS trips.txt not found or unreadable; edge modes may be inferred", e);
+        }
+
+        return tripModeByTripId;
+    }
+
+    // Loads the transport mode for each route from routes.txt by looking at the route_type field, which is a GTFS standard field that indicates the type of transportation used on that route.
+    // This allows us to enrich stop edges with transport mode information when we build them from stop_times.txt.
+    private Map<String, TransportMode> loadRouteModeByRouteId() {
+        Map<String, TransportMode> routeModeByRouteId = new HashMap<>();
+        try (BufferedReader reader = openGtfsReader("routes.txt")) {
+            String header = reader.readLine();
+            if (header == null) {
+                return Map.of();
+            }
+
+            // Build a map of column name to index for easy lookup
+            Map<String, Integer> columnIndex = buildColumnIndex(header);
+            Integer routeIdIdx = columnIndex.get("route_id");
+            Integer routeTypeIdx = columnIndex.get("route_type");
+            if (routeIdIdx == null || routeTypeIdx == null) {
+                return Map.of();
+            }
+
+            // Read each line of routes.txt, parse the CSV, and build a map of route_id to transport mode by looking at the route_type field and mapping it to our internal TransportMode enum.
+            String line;
+            while ((line = reader.readLine()) != null) {
+                List<String> tokens = parseCsvLine(line);
+                String routeId = getValue(tokens, routeIdIdx);
+                String routeType = getValue(tokens, routeTypeIdx);
+                if (isBlank(routeId) || isBlank(routeType)) {
+                    continue;
+                }
+
+                try {
+                    int gtfsType = Integer.parseInt(routeType);
+                    routeModeByRouteId.put(routeId, mapGtfsRouteType(gtfsType));
+                } catch (NumberFormatException ignored) {
+                    // ignore invalid route_type values
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("GTFS routes.txt not found or unreadable; edge modes may be inferred", e);
+        }
+
+        return routeModeByRouteId;
+    }
+
+    // Maps GTFS route_type integers to our internal TransportMode enum.
+    //  GTFS defines a standard set of route types, but in practice many feeds use them inconsistently,
+    //  so we have some flexibility here and a default fallback to BUS for any types we don't explicitly recognize.
+    private TransportMode mapGtfsRouteType(int routeType) {
+        return switch (routeType) {
+            case 0, 900, 901, 902, 903, 904, 905, 906 -> TransportMode.TRAM;
+            case 1, 2, 100, 109 -> TransportMode.TRAIN;
+            case 3, 700, 701, 702, 703, 704, 705, 706 -> TransportMode.BUS;
+            default -> TransportMode.BUS;
+        };
+    }
+
+    // Tries to open a GTFS file from several possible locations within the classpath, returning a BufferedReader if found or throwing an exception if not found (called once)
     private BufferedReader openGtfsReader(String fileName) throws IOException {
         String[] candidatePaths = new String[] {
                 "gtfs/" + fileName,
@@ -314,20 +432,26 @@ public class GtfsGraphLoader {
     // Simple record to hold stop times data for a single stop within a trip, used for processing stop_times.txt
     private record StopTimeRow(String stopId, int sequence, int arrivalSeconds) {}
 
+    // Helper class to aggregate travel time observations for a given stop->stop link across multiple trips, 
+    // and to determine the dominant transport mode for that link based on the modes of the trips that use it.
     private static class StopEdgeStats {
         private final String fromStopId;
         private final String toStopId;
         private int totalTravelSeconds;
         private int sampleCount;
+        private final Map<TransportMode, Integer> modeCounts = new EnumMap<>(TransportMode.class);
 
         StopEdgeStats(String fromStopId, String toStopId) {
             this.fromStopId = fromStopId;
             this.toStopId = toStopId;
         }
 
-        void addObservation(int travelSeconds) {
+        void addObservation(int travelSeconds, TransportMode mode) {
             this.totalTravelSeconds += travelSeconds;
             this.sampleCount++;
+
+            TransportMode resolved = mode == null ? TransportMode.BUS : mode;
+            modeCounts.merge(resolved, 1, Integer::sum);
         }
 
         String fromStopId() {
@@ -343,6 +467,20 @@ public class GtfsGraphLoader {
                 return DEFAULT_EDGE_TIME_SECONDS;
             }
             return Math.max(DEFAULT_EDGE_TIME_SECONDS, totalTravelSeconds / sampleCount);
+        }
+
+        // Determines the dominant transport mode for this stop->stop link based on the mode that appears most frequently in the observed trips.
+        //  If no mode information is available, defaults to BUS.
+        TransportMode dominantMode() {
+            TransportMode best = TransportMode.BUS;
+            int bestCount = -1;
+            for (Map.Entry<TransportMode, Integer> entry : modeCounts.entrySet()) {
+                if (entry.getValue() > bestCount) {
+                    best = entry.getKey();
+                    bestCount = entry.getValue();
+                }
+            }
+            return best;
         }
     }
 }

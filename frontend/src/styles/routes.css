@@ -146,6 +146,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .leg-item {
@@ -253,6 +254,47 @@
 
 .view-map-btn:hover {
   background: rgba(255, 255, 255, 0.9);
+}
+
+/* Origin picker map panel */
+.origin-map-panel {
+  display: flex;
+  flex-direction: column;
+  height: 360px;
+  padding: 12px;
+}
+
+.panel-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #5f6b7a;
+  margin-bottom: 8px;
+}
+
+.origin-map-wrap {
+  flex: 1;
+  min-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pin-info {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #2a3340;
+}
+
+.clear-pin-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  color: #d14a4a;
+  padding: 0;
 }
 
 /* Bars */
