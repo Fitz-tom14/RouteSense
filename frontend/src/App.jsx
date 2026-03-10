@@ -21,6 +21,16 @@ function App() {
     isAuthed ? "Home" : "Login"
   );
 
+  // Selected journey from Routes page — drives Home page KPIs
+  const [selectedJourney, setSelectedJourney] = useState(null);
+  const [selectedJourneyCarCo2, setSelectedJourneyCarCo2] = useState(0);
+
+  function handleSelectJourney(route, carBaselineCo2Grams) {
+    setSelectedJourney(route);
+    setSelectedJourneyCarCo2(carBaselineCo2Grams);
+    setActivePage("Home");
+  }
+
   // After login → mark user as authenticated
   function handleLoginSuccess() {
     setIsAuthed(true);
@@ -40,7 +50,14 @@ function App() {
 
   // Simple page switching (no router yet)
   if (activePage === "Home") {
-    return <HomePage activePage={activePage} onNavigate={setActivePage} />;
+    return (
+      <HomePage
+        activePage={activePage}
+        onNavigate={setActivePage}
+        selectedJourney={selectedJourney}
+        carBaselineCo2Grams={selectedJourneyCarCo2}
+      />
+    );
   }
 
   if (activePage === "Map") {
@@ -48,7 +65,13 @@ function App() {
   }
 
   if (activePage === "Routes") {
-    return <RoutesPage activePage={activePage} onNavigate={setActivePage} />;
+    return (
+      <RoutesPage
+        activePage={activePage}
+        onNavigate={setActivePage}
+        onSelectJourney={handleSelectJourney}
+      />
+    );
   }
 
   if (activePage === "Settings") {

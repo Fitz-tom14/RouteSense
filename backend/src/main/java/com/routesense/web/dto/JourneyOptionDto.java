@@ -2,25 +2,24 @@ package com.routesense.web.dto;
 
 import java.util.List;
 
-/**
- * API response DTO for a journey option.
- */
+// DTO for a single journey option in the journey search response, used in JourneySearchResponseDto.
+//Contains info about the type of journey (e.g. "public_transport", "car_fallback"), the list of stops, total duration, number of transfers, CO2 emissions, score, recommendation status and reason, mode summary, and the list of legs for transit journeys.
 public class JourneyOptionDto {
-    private String type; // e.g. "WALK", "BUS", "TRAIN", etc.
-    private List<StopDto> stops;// List of stops in the journey option, with details for each stop.
-    private int durationSeconds;// Total duration in seconds for the entire journey option.
-    private int transfers;// Number of transfers in the journey option.
-    private double co2Grams;// Estimated CO2 emissions in grams for the journey option.
-    private double score;// Score for ranking the journey option, higher is better.
-    private boolean recommended;// Whether this journey option is recommended to the user.
-    private String recommendationReason;// Explanation for why this option is recommended (if recommended is true).
-    private String modeSummary;// A summary of the modes of transport used in this journey option, e.g. "Walk + Bus + Train".
+    private String type;
+    private List<StopDto> stops;
+    private int durationSeconds;
+    private int transfers;
+    private double co2Grams;
+    private double score;
+    private boolean recommended;
+    private String recommendationReason;
+    private String modeSummary;
+    private List<JourneyLegDto> legs; // per-leg service name and times (empty for fallback paths)
 
     // No-args constructor for JSON deserialization.
     public JourneyOptionDto() {
     }
 
-    // All-args constructor for easy creation of DTO instances.
     public JourneyOptionDto(
             String type,
             List<StopDto> stops,
@@ -30,18 +29,19 @@ public class JourneyOptionDto {
             double score,
             boolean recommended,
             String recommendationReason,
-            String modeSummary
+            String modeSummary,
+            List<JourneyLegDto> legs
     ) {
-        // Map the constructor parameters to the class fields.
-        this.type = type;
-        this.stops = stops;
-        this.durationSeconds = durationSeconds;
-        this.transfers = transfers;
-        this.co2Grams = co2Grams;
-        this.score = score;
-        this.recommended = recommended;
+        this.type                 = type;
+        this.stops                = stops;
+        this.durationSeconds      = durationSeconds;
+        this.transfers            = transfers;
+        this.co2Grams             = co2Grams;
+        this.score                = score;
+        this.recommended          = recommended;
         this.recommendationReason = recommendationReason;
-        this.modeSummary = modeSummary;
+        this.modeSummary          = modeSummary;
+        this.legs                 = legs;
     }
 
     // Getters and setters for all fields, needed for JSON serialization/deserialization and for use in the controller.
@@ -129,8 +129,15 @@ public class JourneyOptionDto {
         return modeSummary;
     }
 
-    // Setter for modeSummary, needed for JSON deserialization.
     public void setModeSummary(String modeSummary) {
         this.modeSummary = modeSummary;
+    }
+
+    public List<JourneyLegDto> getLegs() {
+        return legs;
+    }
+
+    public void setLegs(List<JourneyLegDto> legs) {
+        this.legs = legs;
     }
 }

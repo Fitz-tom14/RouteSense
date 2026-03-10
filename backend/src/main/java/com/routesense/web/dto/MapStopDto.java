@@ -2,13 +2,10 @@ package com.routesense.web.dto;
 
 import com.routesense.domain.model.TransportMode;
 
-/**
- * Web DTO for a map stop marker.
- * Keeps the API response stable even if domain changes internally.
- */
+// DTO for a transport stop on the map, used in MapController's getStops endpoint. Contains the stop ID, name, location (latitude and longitude), and transport mode (e.g. BUS, TRAIN).
 
 public class MapStopDto {
-    private Long id;
+    private String id;
     private String name;
     private double latitude;
     private double longitude;
@@ -17,7 +14,8 @@ public class MapStopDto {
     public MapStopDto() {
     }
 
-    public MapStopDto(Long id, String name, double latitude, double longitude, TransportMode mode) {
+    // Full constructor with all fields, used when converting from the domain TransportStop to this DTO in the controller.
+    public MapStopDto(String id, String name, double latitude, double longitude, TransportMode mode) {
         this.id = id;
         this.name = name;
         this.latitude = latitude;
@@ -25,11 +23,12 @@ public class MapStopDto {
         this.mode = mode;
     }
 
-    public Long getId() {
+    // Getters and setters for all fields, needed for JSON serialization/deserialization and for use in the controller.
+    public String getId() {
         return id;
     }
 
-    public void setId(Long id) {
+    public void setId(String id) {
         this.id = id;
     }
 

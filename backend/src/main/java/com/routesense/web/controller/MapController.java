@@ -16,17 +16,14 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Thin controller for Map View endpoints.
- *
- * Responsibilities:
- * - Parse request params
- * - Call use cases
- * - Map domain models to DTOs
- */
+// Controller for map-related endpoints.
+// Handles requests from the frontend for displaying stops on the map and showing live departure info when a stop is clicked.
 @RestController
 @RequestMapping("/api/map")
 
+// The MapController is responsible for handling API requests related to the map view, including:
+// - Retrieving the list of stops to display on the map, filtered by location and transport modes
+// - Retrieving live departure information for a specific stop when the user clicks on it
 public class MapController {
     private final GetMapStopsUseCase getMapStopsUseCase;
     private final GetStopDeparturesUseCase getStopDeparturesUseCase;
@@ -36,6 +33,7 @@ public class MapController {
         this.getStopDeparturesUseCase = getStopDeparturesUseCase;
     }
 
+    // GET /api/map/stops?location=Galway&modes=BUS,TRAIN&live=true
    @GetMapping("/stops")
    public List<MapStopDto> getStops(
             @RequestParam(required = false) String location,
@@ -51,9 +49,10 @@ public class MapController {
                 .collect(Collectors.toList());
     }
 
+    // GET /api/map/stops/{id}/departures?live=true
     @GetMapping("/stops/{id}/departures")
     public List<DepartureDto> getDepartures(
-            @PathVariable Long id,
+            @PathVariable String id,
             @RequestParam(defaultValue = "true") boolean live
     ) {
         List<Departure> departures = getStopDeparturesUseCase.execute(id, live);
@@ -63,10 +62,8 @@ public class MapController {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * Converts "BUS,TRAIN" into a Set<TransportMode>.
-     * If null/blank, returns empty set meaning "no filter".
-     */
+    // Helper method to parse the comma-separated transport modes from the query parameter into a Set<TransportMode>.
+    // If the input is null or blank, returns an empty set which means "no filter, show all modes".
     private Set<TransportMode> parseModes(String modes) {
         if (modes == null || modes.isBlank()) {
             return Collections.emptySet();

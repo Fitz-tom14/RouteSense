@@ -1,154 +1,95 @@
 package com.routesense.infrastructure.map;
 
 import com.routesense.application.port.MapDataSource;
-import com.routesense.domain.model.Departure;
-import com.routesense.domain.model.TransportMode;
-import com.routesense.domain.model.TransportStop;
+import com.routesense.domain.model.*;
+import com.routesense.infrastructure.gtfs.GtfsGraphLoader;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Temporary in-memory implementation for map data.
- *
- * This supports UI development and clean architecture:
- * - Use cases depend on MapDataSource (port)
- * - This class can be replaced later with a real API or DB-backed implementation
- */
+// In-memory implementation of MapDataSource that serves stop and departure data for the map from the GTFS-loaded graph.
+// This is used by MapController to get the list of stops to display on the map, and to get live departure info for each stop when the user clicks on it.
 @Component
 public class InMemoryMapDataSource implements MapDataSource {
 
-    // Ireland-based stops organized by location
-    private final Map<String, List<TransportStop>> stopsByLocation = Map.of(
-        "Galway", List.of(
-            new TransportStop(1L, "Eyre Square", 53.2740, -9.0498, TransportMode.BUS),
-            new TransportStop(2L, "Ceannt Station", 53.2689, -9.0520, TransportMode.TRAIN),
-            new TransportStop(3L, "Galway Bus Station", 53.2744, -9.0490, TransportMode.BUS)
-        ),
-        "Dublin", List.of(
-            new TransportStop(4L, "O'Connell Street", 53.3506, -6.2595, TransportMode.BUS),
-            new TransportStop(5L, "Connolly Station", 53.3621, -6.2434, TransportMode.TRAIN),
-            new TransportStop(6L, "Heuston Station", 53.6453, -6.2944, TransportMode.TRAIN),
-            new TransportStop(7L, "Luas Abbey Street", 53.3525, -6.2606, TransportMode.TRAM),
-            new TransportStop(8L, "Dublin Bus Depot", 53.3500, -6.2650, TransportMode.BUS)
-        ),
-        "Cork", List.of(
-            new TransportStop(9L, "Patrick Street", 51.8985, -8.4756, TransportMode.BUS),
-            new TransportStop(10L, "Kent Station", 51.8962, -8.4717, TransportMode.TRAIN),
-            new TransportStop(11L, "Cork Bus Station", 51.8970, -8.4800, TransportMode.BUS)
-        )
+    // [minLat, minLng, maxLat, maxLng] bounding boxes for each city
+    private static final Map<String, double[]> CITY_BOUNDS = Map.of(
+        "Galway", new double[]{ 53.20, -9.20, 53.35, -8.85 },
+        "Dublin", new double[]{ 53.28, -6.45, 53.42, -6.10 },
+        "Cork",   new double[]{ 51.84, -8.60, 51.93, -8.38 }
     );
 
-    @Override
-    public List<TransportStop> getAllStops(String location, Set<TransportMode> modes, boolean live) {
-        // Default to Galway if location not specified
-        String effectiveLocation = (location == null || location.isBlank()) ? "Galway" : location;
-        
-        // Get stops for the specified location
-        List<TransportStop> base = stopsByLocation.getOrDefault(effectiveLocation, List.of());
+    private final GtfsGraphLoader loader;
 
-        // If no modes selected, return all.
-        if (modes == null || modes.isEmpty()) {
-            return base;
-        }
-
-        return base.stream()
-                .filter(s -> modes.contains(s.getMode()))
-                .collect(Collectors.toList());
+    // Constructor injection of the GTFS graph loader, which provides access to the stops, edges, and schedules loaded from GTFS.
+    public InMemoryMapDataSource(GtfsGraphLoader loader) {
+        this.loader = loader;
     }
 
+    // Retrieves all transport stops in a given location, filtered by transport modes and live status.
+    // The location is used to filter stops within the city's bounding box. The modes set is used to filter by transport mode (e.g. BUS, TRAIN), and the live flag can be used to toggle between showing all stops vs only those with live departures.
     @Override
-    public List<Departure> getDeparturesForStop(long stopId, boolean live) {
-        // Placeholder departures with Ireland routes. "live" toggles slightly different timings
-        // to simulate real-time behaviour.
-        int offset = live ? 0 : 2;
+    public List<TransportStop> getAllStops(String location, Set<TransportMode> modes, boolean live) {
+        double[] bounds = CITY_BOUNDS.getOrDefault(location, CITY_BOUNDS.get("Galway"));
+        double minLat = bounds[0], minLng = bounds[1], maxLat = bounds[2], maxLng = bounds[3];
 
-        // Galway routes
-        if (Objects.equals(stopId, 1L)) {
-            return List.of(
-                    new Departure("401", 2 + offset),
-                    new Departure("5", 5 + offset),
-                    new Departure("9", 8 + offset)
-            );
+        Map<String, List<StopEdge>>            adjacency = loader.getAdjacencyList();
+        Map<String, List<ScheduledConnection>> schedule  = loader.getSchedule();
+
+        List<TransportStop> result = new ArrayList<>();
+
+        for (Stop stop : loader.getStops().values()) {
+            // Must be inside the city bounding box
+            if (stop.getLatitude()  < minLat || stop.getLatitude()  > maxLat) continue;
+            if (stop.getLongitude() < minLng || stop.getLongitude() > maxLng) continue;
+
+            // Only show stops that have scheduled departures (skip ghost stops)
+            if (!schedule.containsKey(stop.getId())) continue;
+
+            // Determine the mode from outbound edges; default to BUS if unknown
+            TransportMode mode = getModeForStop(stop.getId(), adjacency);
+
+            // Apply the mode filter from the UI (empty set = show all)
+            if (!modes.isEmpty() && !modes.contains(mode)) continue;
+
+            result.add(new TransportStop(stop.getId(), stop.getName(),
+                    stop.getLatitude(), stop.getLongitude(), mode));
         }
 
-        if (Objects.equals(stopId, 2L)) {
-            return List.of(
-                    new Departure("Galway-Dublin", 15 + offset),
-                    new Departure("Galway-Cork", 45 + offset)
-            );
-        }
+        return result;
+    }
 
-        if (Objects.equals(stopId, 3L)) {
-            return List.of(
-                    new Departure("414", 3 + offset),
-                    new Departure("100", 12 + offset)
-            );
-        }
+    /** Looks at the first outbound edge to determine the stop's transport mode. */
+    private TransportMode getModeForStop(String stopId, Map<String, List<StopEdge>> adjacency) {
+        List<StopEdge> edges = adjacency.get(stopId);
+        if (edges == null || edges.isEmpty()) return TransportMode.BUS;
+        TransportMode mode = edges.get(0).getTransportMode();
+        return mode != null ? mode : TransportMode.BUS;
+    }
 
-        // Dublin routes
-        if (Objects.equals(stopId, 4L)) {
-            return List.of(
-                    new Departure("1", 2 + offset),
-                    new Departure("15", 5 + offset),
-                    new Departure("11", 8 + offset)
-            );
-        }
+    // Retrieves the next departures for a given stop ID. If live=true, only returns departures after the current time;
+    // otherwise returns all scheduled departures.
+    @Override
+    public List<Departure> getDeparturesForStop(String stopId, boolean live) {
+        List<ScheduledConnection> connections = loader.getSchedule().get(stopId);
+        if (connections == null || connections.isEmpty()) return List.of();
 
-        if (Objects.equals(stopId, 5L)) {
-            return List.of(
-                    new Departure("Dublin-Galway", 10 + offset),
-                    new Departure("Dublin-Cork", 35 + offset)
-            );
-        }
+        // Find departures after the current time and return the next 5
+        int nowSeconds = LocalTime.now().toSecondOfDay();
 
-        if (Objects.equals(stopId, 6L)) {
-            return List.of(
-                    new Departure("Heuston-Cork", 20 + offset),
-                    new Departure("Heuston-Galway", 50 + offset)
-            );
-        }
-
-        if (Objects.equals(stopId, 7L)) {
-            return List.of(
-                    new Departure("Luas Red", 3 + offset),
-                    new Departure("Luas Green", 7 + offset)
-            );
-        }
-
-        if (Objects.equals(stopId, 8L)) {
-            return List.of(
-                    new Departure("16", 4 + offset),
-                    new Departure("14", 10 + offset)
-            );
-        }
-
-        // Cork routes
-        if (Objects.equals(stopId, 9L)) {
-            return List.of(
-                    new Departure("200", 3 + offset),
-                    new Departure("220", 9 + offset)
-            );
-        }
-
-        if (Objects.equals(stopId, 10L)) {
-            return List.of(
-                    new Departure("Cork-Dublin", 25 + offset),
-                    new Departure("Cork-Galway", 40 + offset)
-            );
-        }
-
-        if (Objects.equals(stopId, 11L)) {
-            return List.of(
-                    new Departure("201", 5 + offset),
-                    new Departure("210", 15 + offset)
-            );
-        }
-
-        return List.of(
-                new Departure("Local", 5 + offset),
-                new Departure("Express", 20 + offset)
-        );
+        return connections.stream()
+                .filter(c -> c.getDepartureTimeSeconds() > nowSeconds)
+                .sorted(Comparator.comparingInt(ScheduledConnection::getDepartureTimeSeconds))
+                .limit(5)
+                .map(c -> {
+                    int minsUntil = (c.getDepartureTimeSeconds() - nowSeconds) / 60;
+                    String label = (c.getRouteShortName() != null && !c.getRouteShortName().isBlank())
+                            ? c.getRouteShortName()
+                            : c.getRouteId();
+                    return new Departure(label, minsUntil);
+                })
+                .collect(Collectors.toList());
     }
 }

@@ -2,14 +2,20 @@ package com.routesense.application.usecase;
 
 import com.routesense.application.port.StopGraphRepository;
 import com.routesense.application.service.EmissionsCalculator;
+import com.routesense.domain.model.JourneyLeg;
 import com.routesense.domain.model.JourneyOption;
 import com.routesense.domain.model.JourneyOptionType;
 import com.routesense.domain.model.JourneySearchResult;
+import com.routesense.domain.model.ScheduledConnection;
 import com.routesense.domain.model.Stop;
 import com.routesense.domain.model.StopEdge;
 import com.routesense.domain.model.TransportMode;
+import com.routesense.infrastructure.routing.OpenRouteServiceClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -20,189 +26,581 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.stream.Collectors;
 
-/**
- * Finds route options between two stops using a Dijkstra-based search.
- */
+// Use case for searching journeys between two stops or locations.  This is the core of the RouteSense
+// application and contains the main routing logic, including the schedule-aware Dijkstra and car baseline.
+// The controller passes in the search parameters and this use case returns a list of scored JourneyOption objects for display on the route cards.
+
 @Component
 public class SearchJourneyUseCase {
 
-    //Constants defined for scoring and routing logic.
-    private static final int BALANCED_TRANSFER_PENALTY_SECONDS = 300;
-    private static final double TIME_WEIGHT = 0.55;
+    private static final Logger LOGGER = LoggerFactory.getLogger(SearchJourneyUseCase.class);
+
+    // Scoring weights for the recommendation engine
+    private static final double TIME_WEIGHT      = 0.55;
     private static final double TRANSFERS_WEIGHT = 0.25;
-    private static final double CO2_WEIGHT = 0.20;
-    private static final double WALK_SPEED_KMH = 4.8;
-    private static final int ROUTING_CANDIDATE_LIMIT = 8;//When looking for a neardby stop 8 stops in total
-    private static final double ROUTING_CANDIDATE_RADIUS_KM = 20.0;//Radius in km to search for nearby stops
+    private static final double CO2_WEIGHT       = 0.20;
 
-    //dependency on the stop graph repository and emissions calculator.
-    private final StopGraphRepository stopGraphRepository;//Provides access to the stop graph data.
-    private final EmissionsCalculator emissionsCalculator;//Used to calculate CO2 emissions for different transport modes and distances.
+    // 1-hour penalty per extra transfer in the fewest-transfers Dijkstra variant
+    private static final int TRANSFER_SCORE_PENALTY = 3600;
 
-    // Constructor injection of dependencies.
+    // 10-minute penalty per transfer in the fastest variant — ensures a direct bus
+    // is always preferred unless a multi-transfer route saves at least 10 min per transfer
+    private static final int FASTEST_TRANSFER_PENALTY_SECONDS = 600;
+
+    // Fallback Dijkstra constants (used only when schedule data is empty)
+    private static final int    BALANCED_TRANSFER_PENALTY_SECONDS = 300;
+    private static final double WALK_SPEED_KMH                    = 4.8;
+    private static final int    ROUTING_CANDIDATE_LIMIT            = 8;
+    private static final double ROUTING_CANDIDATE_RADIUS_KM        = 20.0;
+
+    
+    private final StopGraphRepository      stopGraphRepository;
+    private final EmissionsCalculator      emissionsCalculator;
+    private final OpenRouteServiceClient   openRouteServiceClient;
+
+    
     public SearchJourneyUseCase(
-            StopGraphRepository stopGraphRepository,
-            EmissionsCalculator emissionsCalculator
+            StopGraphRepository    stopGraphRepository,
+            EmissionsCalculator    emissionsCalculator,
+            OpenRouteServiceClient openRouteServiceClient
     ) {
-        this.stopGraphRepository = stopGraphRepository;
-        this.emissionsCalculator = emissionsCalculator;
+        this.stopGraphRepository    = stopGraphRepository;
+        this.emissionsCalculator    = emissionsCalculator;
+        this.openRouteServiceClient = openRouteServiceClient;
     }
 
-    // Main method to execute the journey search use case.
-    public JourneySearchResult execute(String originStopId, Double originLat, Double originLon, String destinationStopId) {
+    // Main entry point for searching journeys.
+    // Takes origin and destination stop IDs or coordinates, departure/arrival time, and returns a list of JourneyOption objects with scoring and recommendation info.
+    public JourneySearchResult execute(
+            String  originStopId,
+            Double  originLat,
+            Double  originLon,
+            String  destinationStopId,
+            Double  destinationLat,
+            Double  destinationLon,
+            Integer departureTimeSeconds,
+            Integer arriveBySeconds
+    ) {
+        Map<String, Stop>                      stops          = stopGraphRepository.getStops();
+        Map<String, List<StopEdge>>            adjacencyList  = stopGraphRepository.getAdjacencyList();
+        Map<String, List<ScheduledConnection>> schedule       = stopGraphRepository.getSchedule();
+        Map<String, String>                    routeShortNames = stopGraphRepository.getRouteShortNames();
+
+        // --- Resolve destination ---
+        // If destination coordinates are provided instead of a stop ID, find the nearest stop.
+        // We do NOT filter by outgoing edges here because the destination is where we arrive,
+        // not where we depart — terminal stops have no outgoing edges but are valid destinations.
+        if (destinationLat != null && destinationLon != null && (destinationStopId == null || destinationStopId.isBlank())) {
+            List<StopDistance> nearbyDest = findNearbyStops(destinationLat, destinationLon, 0.6, stops);
+            if (nearbyDest.isEmpty()) {
+                return new JourneySearchResult(List.of(), 0.0);
+            }
+            destinationStopId = nearbyDest.get(0).stopId();
+        }
+
         if (destinationStopId == null || destinationStopId.isBlank()) {
             return new JourneySearchResult(List.of(), 0.0);
         }
 
-        //pulls the stop graph data from the repository, including the stops and their adjacency list.
-        Map<String, Stop> stops = stopGraphRepository.getStops();
-        Map<String, List<StopEdge>> adjacencyList = stopGraphRepository.getAdjacencyList();
+        // When "arrive by" is set, start searching 3 hours before the target so we find real options.
+        // Otherwise fall back to the explicit departure time or the current time.
+        int startTime;
+        if (arriveBySeconds != null) {
+            startTime = Math.max(0, arriveBySeconds - 3 * 3600);
+        } else {
+            startTime = departureTimeSeconds != null
+                    ? departureTimeSeconds
+                    : LocalTime.now().toSecondOfDay();
+        }
 
-        // Resolve effective origin: from a stop ID, or from lat/lon by finding the nearest connected stop.
-        String effectiveOriginStopId = originStopId;
-        int extraOriginWalkSeconds = 0;
-
-        // If lat/lon is provided without a valid stop ID, find the nearest stop with outgoing edges to use as the effective origin.
+        // --- Resolve effective origin(s) ---
+        // When the user drops a map pin, consider ALL stops within 600 m as potential origins
+        // (not just the single nearest). This is essential because two stops at the same
+        // location can serve opposite directions — e.g. the eastbound and westbound Gleann Dara
+        // stops are only ~30 m apart but serve completely different services.
+        // When a stop ID was typed directly, we use only that stop.
+        List<StopDistance> originCandidates;
         if (originLat != null && originLon != null && (originStopId == null || originStopId.isBlank())) {
-            StopDistance nearest = findNearestConnectedStop(originLat, originLon, stops, adjacencyList);
-            if (nearest == null) {
+            // Use the 3 nearest stops within 600 m.  Limiting to 3 avoids generating a flood of
+            // near-identical options when many stops of the same bus line are nearby (e.g. Bus 405
+            // passes through four stops all within 400 m of the pin).
+            List<StopDistance> nearby = findNearbyConnectedStops(originLat, originLon, 0.6, stops, adjacencyList);
+            originCandidates = nearby.size() > 3 ? nearby.subList(0, 3) : nearby;
+            if (originCandidates.isEmpty()) {
                 return new JourneySearchResult(List.of(), 0.0);
             }
-            effectiveOriginStopId = nearest.stopId();// The walking time from the provided coordinates to the effective origin stop is added as extra access time.
-            extraOriginWalkSeconds = walkingSeconds(nearest.distanceKm());// This extra time is considered in the scoring of journey options to account for the initial walk to the stop.
+        } else {
+            if (originStopId == null || originStopId.isBlank()) {
+                return new JourneySearchResult(List.of(), 0.0);
+            }
+            originCandidates = List.of(new StopDistance(originStopId, 0.0));
         }
 
-        //verify that the effective origin and destination stops exist in the graph. If not, return an empty result. (ID)
-        if (effectiveOriginStopId == null || effectiveOriginStopId.isBlank()) {
-            return new JourneySearchResult(List.of(), 0.0);
-        }
+        // Use the nearest candidate as the "effective" origin for fallback Dijkstra and car baseline.
+        StopDistance primaryOrigin = originCandidates.get(0);
+        String effectiveOriginStopId  = primaryOrigin.stopId();
+        int    extraOriginWalkSeconds = walkingSeconds(primaryOrigin.distanceKm());
 
-        //verify that the effective origin and destination stops exist in the graph. If not, return an empty result.(Keys)
         if (!stops.containsKey(effectiveOriginStopId) || !stops.containsKey(destinationStopId)) {
             return new JourneySearchResult(List.of(), 0.0);
         }
 
-        //List of journey options to be scored and recommended, and a set to track seen route signatures to avoid duplicates.
-        List<JourneyOption> optionsToScore = new ArrayList<>(); //adding to a list of options to be scored and recommended later
-        Set<String> seenSignatures = new HashSet<>();
+        //Find public transport options
+        List<JourneyOption> optionsToScore = new ArrayList<>();
+        Set<String>         seenSignatures = new HashSet<>();
 
-        //Trys to find direct routes between the effective origin and destination stops. If a direct route exists, it can be added as a journey option without needing to consider nearby stops.
-        RoutingAnchors anchors = resolveRoutingAnchors(effectiveOriginStopId, destinationStopId, stops, adjacencyList);
-        if (anchors != null) {
-            PathResult fastest = dijkstra( //Finds the fastest path based on travel time.
-                anchors.routingOriginStopId(),
-                anchors.routingDestinationStopId(),
-                adjacencyList,
-                edge -> edge.getTravelTimeSeconds()
-            );
-            PathResult fewestTransfers = dijkstra(//Finds the path with the fewest transfers by assigning a weight of 1 to each edge, effectively counting the number of stops (and thus transfers) in the path.
-                anchors.routingOriginStopId(),
-                anchors.routingDestinationStopId(),
-                adjacencyList,
-                edge -> 1
-            );
-            PathResult balanced = dijkstra(//Finds a balanced path by adding a fixed penalty to the travel time of each edge, which encourages routes with fewer transfers while still considering overall travel time.
-                anchors.routingOriginStopId(),
-                anchors.routingDestinationStopId(),
-                adjacencyList,
-                edge -> edge.getTravelTimeSeconds() + BALANCED_TRANSFER_PENALTY_SECONDS
-            );
+        if (!schedule.isEmpty()) {
+            String scheduleDest = resolveScheduleStop(destinationStopId, schedule, stops, adjacencyList);
 
-            //Results from these three searches are added as journey options, with the total duration including any extra walking time to access the stops.
-            // The CO2 emissions for each option are calculated based on the modes of transport used and the distances traveled.
-            int totalOriginAccessSeconds = anchors.originAccessSeconds() + extraOriginWalkSeconds;
-            addPublicTransportOption(
-                optionsToScore, seenSignatures, fastest, stops, adjacencyList,
-                effectiveOriginStopId, destinationStopId, totalOriginAccessSeconds, anchors.destinationAccessSeconds()
-            );
-            addPublicTransportOption(
-                optionsToScore, seenSignatures, fewestTransfers, stops, adjacencyList,
-                effectiveOriginStopId, destinationStopId, totalOriginAccessSeconds, anchors.destinationAccessSeconds()
-            );
-            addPublicTransportOption(
-                optionsToScore, seenSignatures, balanced, stops, adjacencyList,
-                effectiveOriginStopId, destinationStopId, totalOriginAccessSeconds, anchors.destinationAccessSeconds()
-            );
+            if (scheduleDest != null) {
+                // Try every nearby origin stop so we don't miss buses on the opposite side of the road.
+                for (StopDistance candidate : originCandidates) {
+                    int walkSecs     = walkingSeconds(candidate.distanceKm());
+                    int boardingTime = startTime + walkSecs;
+
+                    String scheduleOrigin = resolveScheduleStop(candidate.stopId(), schedule, stops, adjacencyList);
+                    if (scheduleOrigin == null) continue;
+
+                    // Primary path: real departure times from GTFS schedule
+                    ScheduledPath fastest = scheduleAwareDijkstra(
+                            scheduleOrigin, scheduleDest, schedule, stops, boardingTime, FASTEST_TRANSFER_PENALTY_SECONDS);
+                    ScheduledPath fewestTransfers = scheduleAwareDijkstra(
+                            scheduleOrigin, scheduleDest, schedule, stops, boardingTime, TRANSFER_SCORE_PENALTY);
+                    // 3rd option: next bus 30 minutes later (catches a different service)
+                    ScheduledPath laterOption = scheduleAwareDijkstra(
+                            scheduleOrigin, scheduleDest, schedule, stops, boardingTime + 1800, FASTEST_TRANSFER_PENALTY_SECONDS);
+
+                    // If no buses found AND it is late night (after 21:00), retry from next morning.
+                    boolean isLateNight = boardingTime > 21 * 3600; // checking next day
+                    if (fastest == null && isLateNight) {
+                        fastest = scheduleAwareDijkstra(scheduleOrigin, scheduleDest, schedule, stops, 0, FASTEST_TRANSFER_PENALTY_SECONDS);
+                    }
+                    if (fewestTransfers == null && isLateNight) {
+                        fewestTransfers = scheduleAwareDijkstra(
+                                scheduleOrigin, scheduleDest, schedule, stops, 0, TRANSFER_SCORE_PENALTY);
+                    }
+                    if (laterOption == null && isLateNight) {
+                        laterOption = scheduleAwareDijkstra(
+                                scheduleOrigin, scheduleDest, schedule, stops, 3600, FASTEST_TRANSFER_PENALTY_SECONDS);
+                    }
+
+                    addScheduledOption(optionsToScore, seenSignatures, fastest,         stops, walkSecs, destinationStopId);
+                    addScheduledOption(optionsToScore, seenSignatures, fewestTransfers,  stops, walkSecs, destinationStopId);
+                    addScheduledOption(optionsToScore, seenSignatures, laterOption,      stops, walkSecs, destinationStopId);
+                }
+            }
         }
 
-        //Used to score and recommend the best journey options based on a weighted combination of total duration, number of transfers, and CO2 emissions.
-        // The best option is identified and marked as recommended, with a reason provided for the recommendation.
+        // If schedule-aware search found nothing (e.g. no more departures today), fall back to
+        // the time-unaware Dijkstra so the user always gets route options.
+        if (optionsToScore.isEmpty()) {
+            runFallbackDijkstra(effectiveOriginStopId, destinationStopId,
+                    stops, adjacencyList, routeShortNames, extraOriginWalkSeconds, optionsToScore, seenSignatures);
+        }
+
         List<JourneyOption> scoredPublicOptions = new ArrayList<>(scoreAndRecommend(optionsToScore));
         scoredPublicOptions.sort(Comparator.comparingInt(JourneyOption::getTotalDurationSeconds)
                 .thenComparingInt(JourneyOption::getTransfers)
                 .thenComparingDouble(JourneyOption::getCo2Grams));
 
-        //A car baseline option is generated for comparison, either from the provided geographic coordinates (if no valid origin stop ID was given) or from the effective origin stop.
-        //This baseline estimates the travel time and CO2 emissions for driving directly from the origin to the destination.
-        JourneyOption carBaseline;
-        if (originLat != null && originLon != null && (originStopId == null || originStopId.isBlank())) {
-            carBaseline = buildCarBaselineFromCoords(originLat, originLon, destinationStopId, stops);
-        } else {
-            carBaseline = buildCarBaseline(effectiveOriginStopId, destinationStopId, stops);
+        // When the user asked to "arrive by" a specific time, discard any routes whose estimated
+        // arrival time (startTime + duration) would be after that target.
+        if (arriveBySeconds != null) {
+            final int deadline = arriveBySeconds;
+            final int base     = startTime;
+            scoredPublicOptions = scoredPublicOptions.stream()
+                    .filter(o -> base + o.getTotalDurationSeconds() <= deadline)
+                    .collect(Collectors.toList());
         }
 
-        // The car baseline is added to the list of scored public transport options for comparison.
-        // The final result includes all journey options along with the CO2 emissions of the car baseline for reference.
+        //Car baseline
+        double originLatForCar = originLat  != null ? originLat  : stops.get(effectiveOriginStopId).getLatitude();
+        double originLonForCar = originLon  != null ? originLon  : stops.get(effectiveOriginStopId).getLongitude();
+        Stop   destination     = stops.get(destinationStopId);
+
+        // If we have a valid destination stop, try to build a car baseline.  If the ORS call fails, the fallback is a JourneyOption with infinite duration and zero CO2 which will never be recommended.
+        JourneyOption    carBaseline     = null;
+        List<List<Double>> carGeometry  = null;
+        if (destination != null) {
+            CarBaselineResult cbr = buildCarBaseline(originLatForCar, originLonForCar, destination);
+            carBaseline = cbr.option();
+            carGeometry = cbr.geometry();
+        }
+
         List<JourneyOption> allOptions = new ArrayList<>(scoredPublicOptions);
         if (carBaseline != null) {
             allOptions.add(carBaseline);
         }
 
-        double carBaselineCo2Grams = carBaseline == null ? 0.0 : carBaseline.getCo2Grams();
-        return new JourneySearchResult(List.copyOf(allOptions), carBaselineCo2Grams);
+        double carBaselineCo2 = carBaseline == null ? 0.0 : carBaseline.getCo2Grams();
+        return new JourneySearchResult(List.copyOf(allOptions), carBaselineCo2, carGeometry);
     }
 
-    /**
-     * Finds the nearest stop that has outgoing edges (i.e. is usable as a routing origin)
-     * to the given geographic coordinates.
-     */
-    private StopDistance findNearestConnectedStop(
-            double lat,
-            double lon,
+    // Builds a car baseline option using OpenRouteService for distance and duration, falling back to haversine distance if the API call fails.
+    // The car baseline is used to provide context to the user — if the recommended bus route takes 45 minutes but the car baseline is 15 minutes, the user understands that the bus is slower but may still prefer it for cost or environmental reasons.  If the car baseline is close to or worse than the bus options, that strengthens the recommendation for public transport.
+    // Max walking distance to count a nearby stop as "reached the destination"
+    private static final double DEST_WALK_RADIUS_KM = 0.45;
+
+    // Result of building the car baseline, including the JourneyOption and the route geometry for map display.
+    private ScheduledPath scheduleAwareDijkstra(
+            String originStopId,
+            String destinationStopId,
+            Map<String, List<ScheduledConnection>> schedule,
             Map<String, Stop> stops,
-            Map<String, List<StopEdge>> adjacencyList
+            int startTimeSeconds,
+            int transferPenaltySeconds
     ) {
-        //Iterates through all stops in the graph, calculating the distance from the provided coordinates to each stop that has outgoing edges.
-        StopDistance nearest = null;
-        for (Map.Entry<String, Stop> entry : stops.entrySet()) {
-            String stopId = entry.getKey();
-            if (adjacencyList.getOrDefault(stopId, List.of()).isEmpty()) {
+        Stop destStop = stops.get(destinationStopId);
+        double destLat = destStop != null ? destStop.getLatitude()  : Double.NaN;
+        double destLon = destStop != null ? destStop.getLongitude() : Double.NaN;
+
+        // bestScore tracks the lowest score (arrivalTime + transfers*penalty) seen
+        // for each (stopId, routeId) pair so we can skip stale queue entries.
+        Map<String, Integer>     bestScore = new HashMap<>();
+        PriorityQueue<TripState> queue     = new PriorityQueue<>(Comparator.comparingInt(TripState::score));
+
+        // Initial state: at the origin stop, not on any route, at the specified start time, with zero transfers and zero score.
+        TripState start = new TripState(originStopId, null, startTimeSeconds, 0, 0, null, null);
+        queue.add(start);
+        bestScore.put(stateKey(originStopId, null), 0);
+
+        TripState destinationState   = null;
+        TripState bestProximityState = null;
+        double    bestProximityDistKm = Double.MAX_VALUE;
+        // Once we have a proximity candidate, keep looking for up to 10 min of extra
+        // Dijkstra score to find a closer alighting stop (e.g. Eyre Square vs Saint Francis St).
+        final int PROXIMITY_SLACK_S = 600;
+
+        while (!queue.isEmpty()) {
+            TripState current = queue.poll();
+
+            // Skip this entry if we already found a better path to this state
+            if (current.score() > bestScore.getOrDefault(stateKey(current.stopId(), current.routeId()), Integer.MAX_VALUE)) {
                 continue;
             }
-            // The distance is calculated using the Haversine formula, which provides the great-circle distance between two points on the Earth's surface based on their latitudes and longitudes.
-            Stop stop = entry.getValue();
-            double distanceKm = emissionsCalculator.haversineDistanceKm(lat, lon, stop.getLatitude(), stop.getLongitude());
-            if (nearest == null || distanceKm < nearest.distanceKm()) {
-                nearest = new StopDistance(stopId, distanceKm);
+
+            // If we already have a proximity candidate and this state is much slower, stop exploring.
+            if (bestProximityState != null && current.score() > bestProximityState.score() + PROXIMITY_SLACK_S) {
+                break;
+            }
+
+            // Exact match always terminates immediately.
+            if (current.stopId().equals(destinationStopId)) {
+                destinationState = current;
+                break;
+            }
+
+            // Proximity check: record the closest stop within walking distance of the destination.
+            // Do NOT break here — continue so the bus can reach an even closer stop (e.g. Eyre Square
+            // is closer to Ceannt Station than Saint Francis Street which comes one stop earlier).
+            if (!Double.isNaN(destLat)) {
+                Stop cur = stops.get(current.stopId());
+                if (cur != null) {
+                    double dist = emissionsCalculator.haversineDistanceKm(
+                            cur.getLatitude(), cur.getLongitude(), destLat, destLon);
+                    if (dist <= DEST_WALK_RADIUS_KM && dist < bestProximityDistKm) {
+                        bestProximityDistKm = dist;
+                        bestProximityState  = current;
+                    }
+                }
+            }
+
+            // Look at all buses departing from this stop
+            for (ScheduledConnection conn : schedule.getOrDefault(current.stopId(), List.of())) {
+
+                // Can only board a bus that has not yet left
+                if (conn.getDepartureTimeSeconds() < current.arrivalTime()) {
+                    continue;
+                }
+
+                // Direction filter: at the origin stop (no route yet), skip connections that move
+                // more than 300 m further from the destination.  This prevents boarding loop routes
+                // in the wrong direction (e.g. Bus 405 going west before looping back east).
+                if (current.routeId() == null && !Double.isNaN(destLat)) {
+                    Stop curStop  = stops.get(current.stopId());
+                    Stop nextStop = stops.get(conn.getToStopId());
+                    if (curStop != null && nextStop != null) {
+                        double curDist  = emissionsCalculator.haversineDistanceKm(
+                                curStop.getLatitude(),  curStop.getLongitude(),  destLat, destLon);
+                        double nextDist = emissionsCalculator.haversineDistanceKm(
+                                nextStop.getLatitude(), nextStop.getLongitude(), destLat, destLon);
+                        if (nextDist > curDist + 0.1) {
+                            continue; // first hop goes backwards — skip
+                        }
+                    }
+                }
+
+                // Boarding a different route than the one we are already on is a transfer.
+                // The very first boarding (routeId == null) is not counted as a transfer.
+                boolean isTransfer  = current.routeId() != null && !conn.getRouteId().equals(current.routeId());
+                int     newTransfers = current.transfers() + (isTransfer ? 1 : 0);
+                int     newScore     = conn.getArrivalTimeSeconds() + newTransfers * transferPenaltySeconds;
+
+                String nextKey = stateKey(conn.getToStopId(), conn.getRouteId());
+                if (newScore < bestScore.getOrDefault(nextKey, Integer.MAX_VALUE)) {
+                    bestScore.put(nextKey, newScore);
+                    queue.add(new TripState(
+                            conn.getToStopId(),
+                            conn.getRouteId(),
+                            conn.getArrivalTimeSeconds(),
+                            newTransfers,
+                            newScore,
+                            current,
+                            conn
+                    ));
+                }
             }
         }
-        return nearest;
-    }
 
-    /**
-     * Builds a car baseline journey option when the origin is a geographic coordinate rather than a stop.
-     */
-    private JourneyOption buildCarBaselineFromCoords(
-            double originLat, //latitude for mapping the provided geographic coordinates to a virtual origin stop for the car baseline calculation.
-            double originLon, //longitude for mapping the provided geographic coordinates to a virtual origin stop for the car baseline calculation.
-            String destinationStopId,//destination stop ID for the car baseline calculation.
-            Map<String, Stop> stops
-    ) {
-        Stop destination = stops.get(destinationStopId);
-        if (destination == null) {
+        // Fall back to the closest proximity stop if no exact match was found.
+        if (destinationState == null) {
+            destinationState = bestProximityState;
+        }
+        if (destinationState == null) {
             return null;
         }
 
-        double straightLineKm = emissionsCalculator.haversineDistanceKm(originLat, originLon, destination.getLatitude(), destination.getLongitude());//calculates straight line distance using haversine
-        double roadDistanceKm = straightLineKm * 1.25;//times 1.25 to estimate road distance.
-        double speedKmPerHour = roadDistanceKm <= 15.0 ? 35.0 : 75.0;//estimates average speed based on distance, with slower speeds for shorter trips to reflect urban driving conditions.
-        int durationSeconds = (int) Math.round((roadDistanceKm / speedKmPerHour) * 3600.0);
-        double co2Grams = emissionsCalculator.estimateCarCo2Grams(roadDistanceKm);
+        return reconstructScheduledPath(destinationState, startTimeSeconds);
+    }
 
-        //A virtual origin stop is created to represent the provided geographic coordinates, allowing the car baseline to be constructed as a direct route from this virtual origin to the destination stop.
-        Stop virtualOrigin = new Stop("custom-location", "Your Location", originLat, originLon);
-        return new JourneyOption(
+    /** Walks back through the parent-pointer chain to build the list of legs. */
+    private ScheduledPath reconstructScheduledPath(TripState destination, int startTime) {
+        LinkedList<PathLeg> legs = new LinkedList<>();
+        TripState current = destination;
+
+        while (current.parent() != null && current.connection() != null) {
+            ScheduledConnection conn = current.connection();
+            legs.addFirst(new PathLeg(
+                    current.parent().stopId(),
+                    current.stopId(),
+                    conn.getRouteShortName(),
+                    conn.getMode(),
+                    conn.getDepartureTimeSeconds(),
+                    conn.getArrivalTimeSeconds()
+            ));
+            current = current.parent();
+        }
+
+        if (legs.isEmpty()) {
+            return null;
+        }
+
+        int totalDuration = destination.arrivalTime() - startTime;
+        return new ScheduledPath(new ArrayList<>(legs), Math.max(0, totalDuration), destination.transfers());
+    }
+
+    /** Converts a ScheduledPath into a JourneyOption and adds it to the list (deduped by stop sequence). */
+    private void addScheduledOption(
+            List<JourneyOption> target,
+            Set<String>         seenSignatures,
+            ScheduledPath       path,
+            Map<String, Stop>   stops,
+            int                 extraOriginWalkSeconds
+    ) {
+        addScheduledOption(target, seenSignatures, path, stops, extraOriginWalkSeconds, null);
+    }
+
+    private void addScheduledOption(
+            List<JourneyOption> target,
+            Set<String>         seenSignatures,
+            ScheduledPath       path,
+            Map<String, Stop>   stops,
+            int                 extraOriginWalkSeconds,
+            String              requestedDestStopId
+    ) {
+        if (path == null || path.legs().isEmpty()) {
+            return;
+        }
+
+        // Build stop list for display
+        List<String> stopIds = new ArrayList<>();
+        stopIds.add(path.legs().get(0).fromStopId());
+        for (PathLeg leg : path.legs()) {
+            stopIds.add(leg.toStopId());
+        }
+
+        // Deduplicate: two routes are equivalent when they use the same ordered sequence of
+        // services AND arrive at the same time.  Appending the final arrival time prevents
+        // e.g. a "Bus 405 at 06:38" and a "Bus 405 at 07:20" from being collapsed, while
+        // collapsing a "Bus 405 from Gleann Dara (06:38)" and a "Bus 405 from Bishop O'Donnell
+        // Road (06:37)" that are the same service arriving at the same destination time.
+        List<String> uniqueServices = new ArrayList<>();
+        String prev = null;
+        for (PathLeg leg : path.legs()) {
+            String sn = leg.routeShortName() != null && !leg.routeShortName().isBlank()
+                    ? leg.routeShortName() : leg.fromStopId();
+            if (!sn.equals(prev)) {
+                uniqueServices.add(sn);
+                prev = sn;
+            }
+        }
+        PathLeg lastLeg = path.legs().get(path.legs().size() - 1);
+        String signature = String.join("->", uniqueServices) + "@" + lastLeg.arrivalSeconds();
+        if (signature.isBlank() || signature.startsWith("@")) {
+            signature = String.join("->", stopIds);
+        }
+        if (!seenSignatures.add(signature)) {
+            return;
+        }
+
+        // Collect Stop objects in order
+        List<Stop> stopList = new ArrayList<>();
+        for (String id : stopIds) {
+            Stop s = stops.get(id);
+            if (s != null) stopList.add(s);
+        }
+        if (stopList.isEmpty()) {
+            return;
+        }
+
+        // Build per-leg detail (service name, times) for display on the route card
+        List<JourneyLeg> journeyLegs = new ArrayList<>();
+        for (PathLeg leg : path.legs()) {
+            Stop from = stops.get(leg.fromStopId());
+            Stop to   = stops.get(leg.toStopId());
+            String fromName   = from != null ? from.getName() : leg.fromStopId();
+            String toName     = to   != null ? to.getName()   : leg.toStopId();
+            String modeLabel  = formatMode(leg.mode());
+            String service    = (leg.routeShortName() != null && !leg.routeShortName().isBlank())
+                    ? modeLabel + " " + leg.routeShortName()
+                    : modeLabel;
+            journeyLegs.add(new JourneyLeg(
+                    service,
+                    fromName,
+                    toName,
+                    formatTime(leg.departureSeconds()),
+                    formatTime(leg.arrivalSeconds()),
+                    modeLabel
+            ));
+        }
+
+        // If the path terminated at a nearby stop rather than the exact destination, add a short
+        // walk leg so the user sees "→ Galway (Ceannt)" rather than "→ Saint Francis Street".
+        int finalWalkSeconds = 0;
+        if (requestedDestStopId != null && !stopIds.isEmpty()) {
+            String lastStopId = stopIds.get(stopIds.size() - 1);
+            if (!lastStopId.equals(requestedDestStopId)) {
+                Stop lastStop = stops.get(lastStopId);
+                Stop destStop = stops.get(requestedDestStopId);
+                if (lastStop != null && destStop != null) {
+                    double walkKm = emissionsCalculator.haversineDistanceKm(
+                            lastStop.getLatitude(), lastStop.getLongitude(),
+                            destStop.getLatitude(), destStop.getLongitude());
+                    if (walkKm <= DEST_WALK_RADIUS_KM) {
+                        finalWalkSeconds = walkingSeconds(walkKm);
+                        int busArrival = lastLeg.arrivalSeconds();
+                        journeyLegs.add(new JourneyLeg(
+                                "Walk",
+                                lastStop.getName(),
+                                destStop.getName(),
+                                formatTime(busArrival),
+                                formatTime(busArrival + finalWalkSeconds),
+                                "Walk"
+                        ));
+                        stopList.add(destStop);
+                    }
+                }
+            }
+        }
+
+        double co2Grams    = calculateCo2ForLegs(path.legs(), stops);
+        int    duration    = Math.max(60, path.totalDurationSeconds() + extraOriginWalkSeconds + finalWalkSeconds);
+        String modeSummary = buildModeSummaryFromLegs(path.legs(), extraOriginWalkSeconds > 0);
+
+        target.add(new JourneyOption(
+                JourneyOptionType.PUBLIC_TRANSPORT,
+                List.copyOf(stopList),
+                duration,
+                path.transfers(),
+                co2Grams,
+                0.0,
+                false,
+                "",
+                modeSummary,
+                List.copyOf(journeyLegs)
+        ));
+    }
+
+    /** Formats seconds-since-midnight as "HH:mm". Handles times past midnight. */
+    private String formatTime(int totalSeconds) {
+        int h = (totalSeconds % 86400) / 3600;
+        int m = (totalSeconds % 3600) / 60;
+        return String.format("%02d:%02d", h, m);
+    }
+
+    /** Sums CO2 emissions across all legs using haversine distance and emissions factor. */
+    private double calculateCo2ForLegs(List<PathLeg> legs, Map<String, Stop> stops) {
+        double total = 0.0;
+        for (PathLeg leg : legs) {
+            Stop from = stops.get(leg.fromStopId());
+            Stop to   = stops.get(leg.toStopId());
+            if (from == null || to == null) continue;
+            double distKm = emissionsCalculator.haversineDistanceKm(
+                    from.getLatitude(), from.getLongitude(),
+                    to.getLatitude(),   to.getLongitude());
+            total += emissionsCalculator.estimateEdgeCo2Grams(distKm, leg.mode());
+        }
+        return total;
+    }
+
+    /**
+     * Builds a mode summary string like "Walk → Bus 411 → Bus 409".
+     * Consecutive legs on the same route are merged into one label.
+     */
+    private String buildModeSummaryFromLegs(List<PathLeg> legs, boolean walkAtStart) {
+        List<String> parts = new ArrayList<>();
+        if (walkAtStart) {
+            parts.add("Walk");
+        }
+        String prevLabel = null;
+        for (PathLeg leg : legs) {
+            String label = (leg.routeShortName() != null && !leg.routeShortName().isBlank())
+                    ? formatMode(leg.mode()) + " " + leg.routeShortName()
+                    : formatMode(leg.mode());
+            if (!label.equals(prevLabel)) {
+                parts.add(label);
+                prevLabel = label;
+            }
+        }
+        return parts.isEmpty() ? "Public transport" : String.join(" → ", parts);
+    }
+
+    // -------------------------------------------------------------------------
+    // Car baseline
+    // -------------------------------------------------------------------------
+
+    /**
+     * Tries OpenRouteService for a real road distance and duration.
+     * Falls back to haversine x 1.25 if ORS is unavailable or the key is not set.
+     */
+    private CarBaselineResult buildCarBaseline(double originLat, double originLon, Stop destination) {
+        double distanceKm;
+        int    durationSeconds;
+        List<List<Double>> geometry = null;
+
+        OpenRouteServiceClient.CarRoute orsRoute = openRouteServiceClient
+                .getDrivingRoute(originLat, originLon, destination.getLatitude(), destination.getLongitude())
+                .orElse(null);
+
+        if (orsRoute != null) {
+            distanceKm      = orsRoute.distanceKm();
+            durationSeconds = orsRoute.durationSeconds();
+            geometry        = orsRoute.geometry(); // road-following polyline from ORS
+        } else {
+            // Haversine fallback: straight-line * 1.25 to approximate road distance
+            double straightKm = emissionsCalculator.haversineDistanceKm(
+                    originLat, originLon, destination.getLatitude(), destination.getLongitude());
+            distanceKm     = straightKm * 1.25;
+            double speedKmh = distanceKm <= 15.0 ? 35.0 : 75.0;
+            durationSeconds = (int) Math.round((distanceKm / speedKmh) * 3600.0);
+        }
+
+        double co2Grams      = emissionsCalculator.estimateCarCo2Grams(distanceKm);
+        Stop   virtualOrigin = new Stop("custom-location", "Your Location", originLat, originLon);
+
+        JourneyOption option = new JourneyOption(
                 JourneyOptionType.CAR_BASELINE,
                 List.of(virtualOrigin, destination),
                 Math.max(0, durationSeconds),
@@ -213,176 +611,135 @@ public class SearchJourneyUseCase {
                 "Driving baseline for comparison",
                 "Car"
         );
+        return new CarBaselineResult(option, geometry);
     }
 
-    //Scores and recommends the best journey options based on a weighted combination of total duration, number of transfers, and CO2 emissions.
+    private record CarBaselineResult(JourneyOption option, List<List<Double>> geometry) {}
+
+    // -------------------------------------------------------------------------
+    // Fallback: time-unaware Dijkstra (used when schedule is empty)
+    // -------------------------------------------------------------------------
+
+    /** Runs the original three-variant Dijkstra search when no schedule data is loaded. */
+    private void runFallbackDijkstra(
+            String                     effectiveOriginStopId,
+            String                     destinationStopId,
+            Map<String, Stop>          stops,
+            Map<String, List<StopEdge>> adjacencyList,
+            Map<String, String>        routeShortNames,
+            int                        extraOriginWalkSeconds,
+            List<JourneyOption>        optionsToScore,
+            Set<String>                seenSignatures
+    ) {
+        RoutingAnchors anchors = resolveRoutingAnchors(
+                effectiveOriginStopId, destinationStopId, stops, adjacencyList);
+        if (anchors == null) {
+            return;
+        }
+
+        PathResult fastest = dijkstra(anchors.routingOriginStopId(), anchors.routingDestinationStopId(),
+                adjacencyList, edge -> edge.getTravelTimeSeconds());
+        PathResult fewestTransfers = dijkstra(anchors.routingOriginStopId(), anchors.routingDestinationStopId(),
+                adjacencyList, edge -> 1);
+        PathResult balanced = dijkstra(anchors.routingOriginStopId(), anchors.routingDestinationStopId(),
+                adjacencyList, edge -> edge.getTravelTimeSeconds() + BALANCED_TRANSFER_PENALTY_SECONDS);
+
+        int totalOriginAccess = anchors.originAccessSeconds() + extraOriginWalkSeconds;
+        addPublicTransportOption(optionsToScore, seenSignatures, fastest,        stops, adjacencyList, routeShortNames,
+                effectiveOriginStopId, destinationStopId, totalOriginAccess, anchors.destinationAccessSeconds());
+        addPublicTransportOption(optionsToScore, seenSignatures, fewestTransfers, stops, adjacencyList, routeShortNames,
+                effectiveOriginStopId, destinationStopId, totalOriginAccess, anchors.destinationAccessSeconds());
+        addPublicTransportOption(optionsToScore, seenSignatures, balanced,       stops, adjacencyList, routeShortNames,
+                effectiveOriginStopId, destinationStopId, totalOriginAccess, anchors.destinationAccessSeconds());
+    }
+
+    // -------------------------------------------------------------------------
+    // Scoring and recommendation
+    // -------------------------------------------------------------------------
+
     private List<JourneyOption> scoreAndRecommend(List<JourneyOption> options) {
         if (options.isEmpty()) {
             return List.of();
         }
 
-        //Calculates the minimum and maximum values for total duration, transfers, and CO2 emissions across all options to use for normalization in the scoring process.
-        int minTime = options.stream().mapToInt(JourneyOption::getTotalDurationSeconds).min().orElse(0);
-        int maxTime = options.stream().mapToInt(JourneyOption::getTotalDurationSeconds).max().orElse(0);
-        int minTransfers = options.stream().mapToInt(JourneyOption::getTransfers).min().orElse(0);
-        int maxTransfers = options.stream().mapToInt(JourneyOption::getTransfers).max().orElse(0);
-        double minCo2 = options.stream().mapToDouble(JourneyOption::getCo2Grams).min().orElse(0.0);
-        double maxCo2 = options.stream().mapToDouble(JourneyOption::getCo2Grams).max().orElse(0.0);
+        int    minTime      = options.stream().mapToInt(JourneyOption::getTotalDurationSeconds).min().orElse(0);
+        int    maxTime      = options.stream().mapToInt(JourneyOption::getTotalDurationSeconds).max().orElse(0);
+        int    minTransfers = options.stream().mapToInt(JourneyOption::getTransfers).min().orElse(0);
+        int    maxTransfers = options.stream().mapToInt(JourneyOption::getTransfers).max().orElse(0);
+        double minCo2       = options.stream().mapToDouble(JourneyOption::getCo2Grams).min().orElse(0.0);
+        double maxCo2       = options.stream().mapToDouble(JourneyOption::getCo2Grams).max().orElse(0.0);
 
-        //Each option is scored based on a weighted sum of its normalized total duration, transfers, and CO2 emissions.
-        // The option with the lowest score is identified as the best option and marked as recommended, with a reason provided for the recommendation.
-        List<ScoredJourney> scoredJourneys = new ArrayList<>();
-        int bestIndex = 0;
-        double bestScore = Double.MAX_VALUE;
+        List<ScoredJourney> scored     = new ArrayList<>();
+        int                 bestIndex  = 0;
+        double              bestScore  = Double.MAX_VALUE;
 
-        //Iterates through each journey option, normalizing its attributes and calculating a composite score based on the defined weights.
-        // The best option is tracked based on the lowest score.
         for (int i = 0; i < options.size(); i++) {
             JourneyOption option = options.get(i);
-
-            // Normalizes the total duration, transfers, and CO2 emissions for the option to a 0-1 scale based on the minimum and maximum values across all options.
-            // This normalization allows for a fair comparison between options that may have different scales for these attributes.
-            double normTime = normalize(option.getTotalDurationSeconds(), minTime, maxTime);
+            double normTime      = normalize(option.getTotalDurationSeconds(), minTime, maxTime);
             double normTransfers = normalize(option.getTransfers(), minTransfers, maxTransfers);
-            double normCo2 = normalize(option.getCo2Grams(), minCo2, maxCo2);
+            double normCo2       = normalize(option.getCo2Grams(), minCo2, maxCo2);
+            double score         = TIME_WEIGHT * normTime + TRANSFERS_WEIGHT * normTransfers + CO2_WEIGHT * normCo2;
 
-            // Calculates a composite score for the option using the defined weights for time, transfers, and CO2 emissions.
-            // A lower score indicates a better option based on the weighted criteria.
-            double score = (TIME_WEIGHT * normTime)
-                    + (TRANSFERS_WEIGHT * normTransfers)
-                    + (CO2_WEIGHT * normCo2);
-
-            // The scored option is added to the list of scored journeys, and the best option is tracked based on the lowest score.
-            scoredJourneys.add(new ScoredJourney(option, score));
+            scored.add(new ScoredJourney(option, score));
             if (score < bestScore) {
                 bestScore = score;
                 bestIndex = i;
             }
         }
 
-        //The best option is identified and marked as recommended, with a reason provided for the recommendation based on which attributes it excels in (e.g., fastest, fewest transfers, lowest CO2).
         JourneyOption winner = options.get(bestIndex);
-        String recommendationReason = recommendationReason(winner, minTime, minTransfers, minCo2);
+        String        reason = recommendationReason(winner, minTime, minTransfers, minCo2);
 
-        //The list of journey options is updated to mark the best option as recommended and to include the recommendation reason in its description.
         List<JourneyOption> updated = new ArrayList<>();
-        for (int i = 0; i < scoredJourneys.size(); i++) {
-            ScoredJourney scoredJourney = scoredJourneys.get(i);
-            JourneyOption option = scoredJourney.option();
-            boolean recommended = i == bestIndex;
-
-            // Each option is reconstructed with the recommendation status and reason included in its description,
-            // allowing the frontend to display this information to users when presenting the journey options.
+        for (int i = 0; i < scored.size(); i++) {
+            ScoredJourney sj          = scored.get(i);
+            boolean       recommended = i == bestIndex;
             updated.add(new JourneyOption(
-                    option.getType(),
-                    option.getStops(),
-                    option.getTotalDurationSeconds(),
-                    option.getTransfers(),
-                    option.getCo2Grams(),
-                    scoredJourney.score(),
+                    sj.option().getType(),
+                    sj.option().getStops(),
+                    sj.option().getTotalDurationSeconds(),
+                    sj.option().getTransfers(),
+                    sj.option().getCo2Grams(),
+                    sj.score(),
                     recommended,
-                    recommended ? recommendationReason : "Alternative route option",
-                    option.getModeSummary()
+                    recommended ? reason : "Alternative route option",
+                    sj.option().getModeSummary(),
+                    sj.option().getLegs()
             ));
         }
 
         return List.copyOf(updated);
     }
 
-    //Determines the reason for recommending a particular journey option based on its attributes compared to the minimum values across all options.
-    private String recommendationReason(
-            JourneyOption option,
-            int minTime,
-            int minTransfers,
-            double minCo2
-    ) {
-        // Checks if the option is the fastest, has the fewest transfers, or has the lowest CO2 emissions compared to the minimum values.
-        boolean fastest = option.getTotalDurationSeconds() == minTime;
+    private String recommendationReason(JourneyOption option, int minTime, int minTransfers, double minCo2) {
+        boolean fastest         = option.getTotalDurationSeconds() == minTime;
         boolean fewestTransfers = option.getTransfers() == minTransfers;
-        boolean lowestCo2 = Double.compare(option.getCo2Grams(), minCo2) == 0;
+        boolean lowestCo2       = Double.compare(option.getCo2Grams(), minCo2) == 0;
 
-        // Based on which attributes the option excels in, a reason for the recommendation is constructed.
-        int wins = 0;
-        if (fastest) {
-            wins++;
-        }
-        if (fewestTransfers) {
-            wins++;
-        }
-        if (lowestCo2) {
-            wins++;
-        }
-
-        if (wins > 1) {
-            return "Best balance of time + transfers + CO2";
-        }
-        if (fastest) {
-            return "Fastest option";
-        }
-        if (fewestTransfers) {
-            return "Fewest transfers";
-        }
-        if (lowestCo2) {
-            return "Lowest CO2";
-        }
-
+        int wins = (fastest ? 1 : 0) + (fewestTransfers ? 1 : 0) + (lowestCo2 ? 1 : 0);
+        if (wins > 1)       return "Best balance of time + transfers + CO2";
+        if (fastest)        return "Fastest option";
+        if (fewestTransfers) return "Fewest transfers";
+        if (lowestCo2)      return "Lowest CO2";
         return "Best balance of time + transfers + CO2";
     }
 
-    //Builds a car baseline journey option based on the effective origin and destination stops, estimating travel time and CO2 emissions for driving directly between them.
-    private JourneyOption buildCarBaseline(String originStopId, String destinationStopId, Map<String, Stop> stops) {
-        Stop origin = stops.get(originStopId);
-        Stop destination = stops.get(destinationStopId);
-        if (origin == null || destination == null) {
-            return null;
-        }
+    // -------------------------------------------------------------------------
+    // Fallback Dijkstra helpers (unchanged from original algorithm)
+    // -------------------------------------------------------------------------
 
-        // The straight-line distance between the origin and destination is calculated using the Haversine formula, 
-        // which provides an estimate of the direct distance between the two points on the Earth's surface.
-        double straightLineKm = emissionsCalculator.haversineDistanceKm(
-                origin.getLatitude(),
-                origin.getLongitude(),
-                destination.getLatitude(),
-                destination.getLongitude()
-        );
-
-        // The road distance is estimated by multiplying the straight-line distance by a factor (1.25) to account for the fact that roads do not follow a perfectly straight path between two points.
-        double roadDistanceKm = straightLineKm * 1.25;
-        double speedKmPerHour = roadDistanceKm <= 15.0 ? 35.0 : 75.0;
-
-        // The travel time for the car baseline is estimated based on the road distance and an average speed, with slower speeds assumed for shorter trips to reflect urban driving conditions.
-        int durationSeconds = (int) Math.round((roadDistanceKm / speedKmPerHour) * 3600.0);
-        double co2Grams = emissionsCalculator.estimateCarCo2Grams(roadDistanceKm);
-
-        // A journey option is created for the car baseline, with the type set to CAR_BASELINE and a description indicating that it is a driving baseline for comparison.
-        // The mode summary is set to "Car" to clearly indicate the mode of transport for this option.
-        return new JourneyOption(
-                JourneyOptionType.CAR_BASELINE,
-                List.of(origin, destination),
-                Math.max(0, durationSeconds),
-                0,
-                co2Grams,
-                999_999.0,
-                false,
-                "Driving baseline for comparison",
-                "Car"
-        );
-    }
-
-    //Adds a public transport journey option to the list of options to be scored, based on the provided path result and access times to the origin and destination stops.
     private void addPublicTransportOption(
-            List<JourneyOption> target,
-            Set<String> seenSignatures,
-            PathResult pathResult,
-            Map<String, Stop> stopsById,
-            Map<String, List<StopEdge>> adjacencyList,
-            String requestedOriginStopId,
-            String requestedDestinationStopId,
-            int originAccessSeconds,
-            int destinationAccessSeconds
+            List<JourneyOption>          target,
+            Set<String>                  seenSignatures,
+            PathResult                   pathResult,
+            Map<String, Stop>            stopsById,
+            Map<String, List<StopEdge>>  adjacencyList,
+            Map<String, String>          routeShortNames,
+            String                       requestedOriginStopId,
+            String                       requestedDestinationStopId,
+            int                          originAccessSeconds,
+            int                          destinationAccessSeconds
     ) {
-        //If the path result is null or contains no stops, it is not added as a journey option.
-        //This check ensures that only valid routes with at least one stop are considered for scoring and recommendation.
         if (pathResult == null || pathResult.stopIds().isEmpty()) {
             return;
         }
@@ -394,144 +751,134 @@ public class SearchJourneyUseCase {
 
         List<Stop> stopList = new ArrayList<>();
         if (!requestedOriginStopId.equals(pathResult.stopIds().get(0))) {
-            Stop requestedOrigin = stopsById.get(requestedOriginStopId);
-            if (requestedOrigin != null) {
-                stopList.add(requestedOrigin);
-            }
+            Stop s = stopsById.get(requestedOriginStopId);
+            if (s != null) stopList.add(s);
         }
-
         for (String stopId : pathResult.stopIds()) {
-            Stop stop = stopsById.get(stopId);
-            if (stop != null) {
-                stopList.add(stop);
-            }
+            Stop s = stopsById.get(stopId);
+            if (s != null) stopList.add(s);
         }
-
         if (!requestedDestinationStopId.equals(pathResult.stopIds().get(pathResult.stopIds().size() - 1))) {
-            Stop requestedDestination = stopsById.get(requestedDestinationStopId);
-            if (requestedDestination != null) {
-                stopList.add(requestedDestination);
-            }
+            Stop s = stopsById.get(requestedDestinationStopId);
+            if (s != null) stopList.add(s);
         }
 
-        if (stopList.isEmpty()) {
-            return;
-        }
+        if (stopList.isEmpty()) return;
 
-        // The modes of transport used in the path are extracted to determine the mode summary and to calculate CO2 emissions based on the transport modes and distances traveled.
-        List<TransportMode> pathModes = extractPathModes(pathResult.stopIds(), adjacencyList);
+        List<TransportMode> pathModes       = extractPathModes(pathResult.stopIds(), adjacencyList);
         List<TransportMode> multimodalModes = new ArrayList<>();
-        if (originAccessSeconds > 0) {
-            multimodalModes.add(TransportMode.WALK);
-        }
+        if (originAccessSeconds      > 0) multimodalModes.add(TransportMode.WALK);
         multimodalModes.addAll(pathModes);
-        if (destinationAccessSeconds > 0) {
-            multimodalModes.add(TransportMode.WALK);
-        }
+        if (destinationAccessSeconds > 0) multimodalModes.add(TransportMode.WALK);
 
-        // The walking distance for accessing the stops is calculated from the access times,
-        //  and the CO2 emissions for the public transport portion of the journey are calculated based on the modes used and distances traveled.
-        double accessWalkDistanceKm = walkingDistanceKmFromSeconds(originAccessSeconds + destinationAccessSeconds);
-        double co2Grams = computePublicTransportCo2(pathResult.stopIds(), stopsById, adjacencyList)
-            + emissionsCalculator.estimateEdgeCo2Grams(accessWalkDistanceKm, TransportMode.WALK);
-        int transfers = countVehicleTransfers(multimodalModes);
-        int durationSeconds = Math.max(60, pathResult.totalDurationSeconds() + originAccessSeconds + destinationAccessSeconds);
+        double accessWalkDistKm = walkingDistanceKmFromSeconds(originAccessSeconds + destinationAccessSeconds);
+        double co2Grams  = computePublicTransportCo2(pathResult.stopIds(), stopsById, adjacencyList)
+                + emissionsCalculator.estimateEdgeCo2Grams(accessWalkDistKm, TransportMode.WALK);
+        int    duration  = Math.max(60, pathResult.totalDurationSeconds() + originAccessSeconds + destinationAccessSeconds);
         String modeSummary = buildModeSummary(multimodalModes);
 
-        //A new journey option is created for the public transport route, with the type set to PUBLIC_TRANSPORT and a description indicating that it is a public transport option.
-        // The total duration includes the travel time from the path result plus any access times
+        // Build per-leg detail by grouping consecutive hops on the same route
+        List<JourneyLeg> journeyLegs = buildLegsFromPath(pathResult.stopIds(), stopsById, adjacencyList, routeShortNames);
+
+        // Transfers = number of distinct service segments minus 1 (each leg change is one transfer)
+        int transfers = Math.max(0, journeyLegs.size() - 1);
+
         target.add(new JourneyOption(
                 JourneyOptionType.PUBLIC_TRANSPORT,
                 List.copyOf(stopList),
-                durationSeconds,
+                duration,
                 transfers,
                 co2Grams,
                 0.0,
                 false,
                 "",
-                modeSummary
+                modeSummary,
+                List.copyOf(journeyLegs)
         ));
     }
 
-    // Resolves the effective routing anchors for the journey search, which may involve finding nearby stops with outgoing edges if the requested origin or destination stops do not have direct routes between them.
+    /**
+     * Groups consecutive hops on the same route into a single leg.
+     * Each leg shows the service name (e.g. "Bus 405"), from/to stop names, and no times
+     * (times are not available in the fallback time-unaware Dijkstra).
+     */
+    private List<JourneyLeg> buildLegsFromPath(
+            List<String>                stopIds,
+            Map<String, Stop>           stopsById,
+            Map<String, List<StopEdge>> adjacencyList,
+            Map<String, String>         routeShortNames
+    ) {
+        List<JourneyLeg> legs = new ArrayList<>();
+        if (stopIds.size() < 2) return legs;
+
+        int i = 0;
+        while (i < stopIds.size() - 1) {
+            StopEdge firstEdge    = selectBestEdge(stopIds.get(i), stopIds.get(i + 1), adjacencyList);
+            String   currentRoute = firstEdge != null ? firstEdge.getRouteId() : null;
+            String   fromId       = stopIds.get(i);
+            int      j            = i + 1;
+
+            // Extend the leg as long as we stay on the same route
+            while (j < stopIds.size() - 1) {
+                StopEdge nextEdge  = selectBestEdge(stopIds.get(j), stopIds.get(j + 1), adjacencyList);
+                String   nextRoute = nextEdge != null ? nextEdge.getRouteId() : null;
+                if (!java.util.Objects.equals(currentRoute, nextRoute)) break;
+                j++;
+            }
+
+            String toId      = stopIds.get(j);
+            String shortName = currentRoute != null ? routeShortNames.getOrDefault(currentRoute, "") : "";
+            TransportMode mode = firstEdge != null && firstEdge.getTransportMode() != null
+                    ? firstEdge.getTransportMode() : TransportMode.BUS;
+            String modeLabel = formatMode(mode);
+            String service   = !shortName.isBlank() ? modeLabel + " " + shortName : modeLabel;
+
+            Stop from = stopsById.get(fromId);
+            Stop to   = stopsById.get(toId);
+            legs.add(new JourneyLeg(
+                    service,
+                    from != null ? from.getName() : fromId,
+                    to   != null ? to.getName()   : toId,
+                    "", "",
+                    modeLabel
+            ));
+            i = j;
+        }
+        return legs;
+    }
+
     private RoutingAnchors resolveRoutingAnchors(
             String requestedOriginStopId,
             String requestedDestinationStopId,
             Map<String, Stop> stopsById,
             Map<String, List<StopEdge>> adjacencyList
     ) {
-        // First, it checks if there is a direct route between the requested origin and destination stops using Dijkstra's algorithm.
-        // If a direct route exists, it can be used as the routing anchors without needing to consider nearby stops.
-        PathResult direct = dijkstra(
-                requestedOriginStopId,
-                requestedDestinationStopId,
-                adjacencyList,
-                edge -> edge.getTravelTimeSeconds()
-        );
+        PathResult direct = dijkstra(requestedOriginStopId, requestedDestinationStopId,
+                adjacencyList, edge -> edge.getTravelTimeSeconds());
         if (direct != null) {
             return new RoutingAnchors(requestedOriginStopId, requestedDestinationStopId, 0, 0);
         }
 
-        // If no direct route exists, the method looks for nearby stops with outgoing edges for both the origin and destination.
-        // It uses the nearestStopCandidates method to find a list of candidate stops within a certain
         List<String> originCandidates = nearestStopCandidates(
-                requestedOriginStopId,// The requested origin stop ID is used to find nearby candidate stops that have outgoing edges, which can serve as potential routing anchors for the origin.
-                stopsById,
-                adjacencyList,
-                ROUTING_CANDIDATE_LIMIT,
-                ROUTING_CANDIDATE_RADIUS_KM,
-                true
-        );
-        // Similarly, it finds nearby candidate stops for the destination, but does not require them to have outgoing edges since they can serve as routing anchors for the destination.
+                requestedOriginStopId, stopsById, adjacencyList, ROUTING_CANDIDATE_LIMIT, ROUTING_CANDIDATE_RADIUS_KM, true);
         List<String> destinationCandidates = nearestStopCandidates(
-                requestedDestinationStopId,// The requested destination stop ID is used to find nearby candidate stops that have outgoing edges, which can serve as potential routing anchors for the destination.
-                stopsById,
-                adjacencyList,
-                ROUTING_CANDIDATE_LIMIT,
-                ROUTING_CANDIDATE_RADIUS_KM,
-                false
-        );
+                requestedDestinationStopId, stopsById, adjacencyList, ROUTING_CANDIDATE_LIMIT, ROUTING_CANDIDATE_RADIUS_KM, false);
 
-        // The method then iterates through all combinations of origin and destination candidate stops, using Dijkstra's algorithm to find the best route between each pair of candidates.
-        RoutingAnchors best = null;
-        int bestTotalSeconds = Integer.MAX_VALUE;
+        RoutingAnchors best            = null;
+        int            bestTotalSeconds = Integer.MAX_VALUE;
 
-        // For each pair of origin and destination candidate stops, it calculates the total travel time including any access times to the requested origin and destination stops.
-        for (String originCandidateId : originCandidates) {
-            for (String destinationCandidateId : destinationCandidates) {
-                PathResult candidatePath = dijkstra(
-                        originCandidateId,
-                        destinationCandidateId,
-                        adjacencyList,
-                        edge -> edge.getTravelTimeSeconds()
-                );
-                if (candidatePath == null) {
-                    continue;
-                }
+        for (String originId : originCandidates) {
+            for (String destId : destinationCandidates) {
+                PathResult candidate = dijkstra(originId, destId, adjacencyList, edge -> edge.getTravelTimeSeconds());
+                if (candidate == null) continue;
 
-                // The access times from the requested origin to the origin candidate and from the destination candidate to the requested destination are estimated based on walking time, which is calculated using the distance between the stops and a defined walking speed.
-                int originAccessSeconds = estimateWalkingSecondsBetweenStops(
-                        requestedOriginStopId,
-                        originCandidateId,
-                        stopsById
-                );
-                // The total travel time for the candidate route is calculated by adding the travel time from the path result and the access times. The best route is tracked based on the lowest total travel time.
-                int destinationAccessSeconds = estimateWalkingSecondsBetweenStops(
-                        destinationCandidateId,
-                        requestedDestinationStopId,
-                        stopsById
-                );
+                int originAccess = estimateWalkingSecondsBetweenStops(requestedOriginStopId, originId, stopsById);
+                int destAccess   = estimateWalkingSecondsBetweenStops(destId, requestedDestinationStopId, stopsById);
+                int total        = candidate.totalDurationSeconds() + originAccess + destAccess;
 
-                // If the total travel time for the candidate route is less than the best total travel time found so far, the routing anchors are updated to use this candidate route.
-                int totalSeconds = candidatePath.totalDurationSeconds() + originAccessSeconds + destinationAccessSeconds;
-                if (totalSeconds < bestTotalSeconds) {
-                    bestTotalSeconds = totalSeconds;
-                    best = new RoutingAnchors(
-                            originCandidateId,
-                            destinationCandidateId,
-                            originAccessSeconds,
-                            destinationAccessSeconds
-                    );
+                if (total < bestTotalSeconds) {
+                    bestTotalSeconds = total;
+                    best = new RoutingAnchors(originId, destId, originAccess, destAccess);
                 }
             }
         }
@@ -539,7 +886,6 @@ public class SearchJourneyUseCase {
         return best;
     }
 
-    //helper method to find nearby stop candidates for routing anchors, based on distance and whether they have outgoing edges.
     private List<String> nearestStopCandidates(
             String requestedStopId,
             Map<String, Stop> stopsById,
@@ -548,44 +894,24 @@ public class SearchJourneyUseCase {
             double radiusKm,
             boolean requireOutgoingEdges
     ) {
-        // The method retrieves the requested stop from the stops map using the provided stop ID. If the requested stop does not exist, an empty list is returned.
         Stop requestedStop = stopsById.get(requestedStopId);
-        if (requestedStop == null) {
-            return List.of();
-        }
+        if (requestedStop == null) return List.of();
 
-        //returns a list of nearby stops sorted by distance.
         List<StopDistance> candidates = new ArrayList<>();
         for (Map.Entry<String, Stop> entry : stopsById.entrySet()) {
-            String candidateStopId = entry.getKey();
-            Stop candidateStop = entry.getValue();
+            String candidateId = entry.getKey();
+            if (requireOutgoingEdges && adjacencyList.getOrDefault(candidateId, List.of()).isEmpty()) continue;
 
-            // If requireOutgoingEdges is true, the method checks if the candidate stop has outgoing edges in the adjacency list. If it does not, the candidate is skipped.
-            if (requireOutgoingEdges && adjacencyList.getOrDefault(candidateStopId, List.of()).isEmpty()) {
-                continue;
-            }
+            double distKm = emissionsCalculator.haversineDistanceKm(
+                    requestedStop.getLatitude(), requestedStop.getLongitude(),
+                    entry.getValue().getLatitude(), entry.getValue().getLongitude());
 
-            // The distance from the requested stop to the candidate stop is calculated using the Haversine formula,
-            // which provides the great-circle distance between two points on the Earth's surface based on their latitudes and longitudes.
-            double distanceKm = emissionsCalculator.haversineDistanceKm(
-                    requestedStop.getLatitude(),
-                    requestedStop.getLongitude(),
-                    candidateStop.getLatitude(),
-                    candidateStop.getLongitude()
-            );
-
-            // If the distance is within the specified radius or if the candidate stop is the same as the requested stop, it is added to the list of candidates.
-            // This allows for nearby stops to be considered as potential routing anchors, while also ensuring that the originally requested stop is included as a candidate.
-            if (distanceKm <= radiusKm || candidateStopId.equals(requestedStopId)) {
-                candidates.add(new StopDistance(candidateStopId, distanceKm));
+            if (distKm <= radiusKm || candidateId.equals(requestedStopId)) {
+                candidates.add(new StopDistance(candidateId, distKm));
             }
         }
 
-        // The list of candidates is sorted by distance in ascending order, so that the closest stops are prioritized when selecting routing anchors.
         candidates.sort(Comparator.comparingDouble(StopDistance::distanceKm));
-
-        // The method then constructs a list of stop IDs for the nearest candidates, up to the specified limit.
-        // If the requested stop ID is not already included in the list of candidates, it is added at the beginning of the list to ensure that it is considered as a potential routing anchor.
         List<String> ids = new ArrayList<>();
         for (int i = 0; i < candidates.size() && i < limit; i++) {
             ids.add(candidates.get(i).stopId());
@@ -593,224 +919,196 @@ public class SearchJourneyUseCase {
         if (!ids.contains(requestedStopId)) {
             ids.add(0, requestedStopId);
         }
-
         return ids;
     }
 
-    // Estimates the walking time in seconds between two stops based on their geographic coordinates and a defined walking speed.
-    // If either stop does not exist, or if the stops are the same, the walking time is estimated as 0 seconds.
-    private int estimateWalkingSecondsBetweenStops(
-            String fromStopId,
-            String toStopId,
-            Map<String, Stop> stopsById
+    /**
+     * Returns the stop ID to use for schedule-aware routing.
+     * If the requested stop has schedule entries, returns it directly.
+     * Otherwise, finds the nearest stop (within 500m) that does have schedule entries.
+     * This handles cases like Irish Rail parent stations whose child stops carry the schedule.
+     */
+    private String resolveScheduleStop(
+            String stopId,
+            Map<String, List<ScheduledConnection>> schedule,
+            Map<String, Stop> stops,
+            Map<String, List<StopEdge>> adjacencyList
     ) {
-        if (fromStopId.equals(toStopId)) {
-            return 0;
+        if (stopId == null) return null;
+        if (!schedule.getOrDefault(stopId, List.of()).isEmpty()) return stopId;
+
+        Stop base = stops.get(stopId);
+        if (base == null) return null;
+
+        String bestId = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Map.Entry<String, Stop> entry : stops.entrySet()) {
+            if (schedule.getOrDefault(entry.getKey(), List.of()).isEmpty()) continue;
+            double dist = emissionsCalculator.haversineDistanceKm(
+                    base.getLatitude(), base.getLongitude(),
+                    entry.getValue().getLatitude(), entry.getValue().getLongitude());
+            if (dist < 0.5 && dist < bestDist) {
+                bestDist = dist;
+                bestId   = entry.getKey();
+            }
         }
-
-        // The method retrieves the "from" and "to" stops from the stops map using the provided stop IDs. If either stop does not exist, the method returns 0 seconds for the walking time.
-        Stop from = stopsById.get(fromStopId);
-        Stop to = stopsById.get(toStopId);
-        if (from == null || to == null) {
-            return 0;
-        }
-
-        // The distance between the two stops is calculated using the Haversine formula,
-        // which provides the great-circle distance between two points on the Earth's surface based on their latitudes and longitudes.
-        double distanceKm = emissionsCalculator.haversineDistanceKm(
-                from.getLatitude(),
-                from.getLongitude(),
-                to.getLatitude(),
-                to.getLongitude()
-        );
-
-        return walkingSeconds(distanceKm);
+        return bestId != null ? bestId : stopId; // fall back to original if nothing nearby
     }
 
-    // Converts a walking distance in kilometers to an estimated walking time in seconds based on a defined walking speed.
+    private StopDistance findNearestConnectedStop(
+            double lat, double lon,
+            Map<String, Stop> stops,
+            Map<String, List<StopEdge>> adjacencyList
+    ) {
+        StopDistance nearest = null;
+        for (Map.Entry<String, Stop> entry : stops.entrySet()) {
+            String stopId = entry.getKey();
+            if (adjacencyList.getOrDefault(stopId, List.of()).isEmpty()) continue;
+            double distKm = emissionsCalculator.haversineDistanceKm(
+                    lat, lon, entry.getValue().getLatitude(), entry.getValue().getLongitude());
+            if (nearest == null || distKm < nearest.distanceKm()) {
+                nearest = new StopDistance(stopId, distKm);
+            }
+        }
+        return nearest;
+    }
+
+    /** Returns all connected stops within maxKm of (lat,lon), sorted nearest-first. */
+    private List<StopDistance> findNearbyStops(
+            double lat, double lon, double maxKm,
+            Map<String, Stop> stops
+    ) {
+        List<StopDistance> result = new ArrayList<>();
+        for (Map.Entry<String, Stop> entry : stops.entrySet()) {
+            double distKm = emissionsCalculator.haversineDistanceKm(
+                    lat, lon, entry.getValue().getLatitude(), entry.getValue().getLongitude());
+            if (distKm <= maxKm) {
+                result.add(new StopDistance(entry.getKey(), distKm));
+            }
+        }
+        result.sort(Comparator.comparingDouble(StopDistance::distanceKm));
+        return result;
+    }
+
+    private List<StopDistance> findNearbyConnectedStops(
+            double lat, double lon, double maxKm,
+            Map<String, Stop> stops,
+            Map<String, List<StopEdge>> adjacencyList
+    ) {
+        List<StopDistance> result = new ArrayList<>();
+        for (Map.Entry<String, Stop> entry : stops.entrySet()) {
+            String stopId = entry.getKey();
+            if (adjacencyList.getOrDefault(stopId, List.of()).isEmpty()) continue;
+            double distKm = emissionsCalculator.haversineDistanceKm(
+                    lat, lon, entry.getValue().getLatitude(), entry.getValue().getLongitude());
+            if (distKm <= maxKm) {
+                result.add(new StopDistance(stopId, distKm));
+            }
+        }
+        result.sort(Comparator.comparingDouble(StopDistance::distanceKm));
+        return result;
+    }
+
+    private int estimateWalkingSecondsBetweenStops(String fromId, String toId, Map<String, Stop> stopsById) {
+        if (fromId.equals(toId)) return 0;
+        Stop from = stopsById.get(fromId);
+        Stop to   = stopsById.get(toId);
+        if (from == null || to == null) return 0;
+        return walkingSeconds(emissionsCalculator.haversineDistanceKm(
+                from.getLatitude(), from.getLongitude(), to.getLatitude(), to.getLongitude()));
+    }
+
     private int walkingSeconds(double distanceKm) {
         return (int) Math.max(0, Math.round((distanceKm / WALK_SPEED_KMH) * 3600.0));
     }
 
-    // Converts a walking time in seconds to an estimated walking distance in kilometers based on a defined walking speed.
     private double walkingDistanceKmFromSeconds(int seconds) {
         return Math.max(0.0, (seconds / 3600.0) * WALK_SPEED_KMH);
     }
 
-    // Extracts the modes of transport used in a path based on the edges between consecutive stops in the path.
-    // If no edge is found between two stops, or if the edge does not have a defined transport mode, it defaults to BUS.
     private List<TransportMode> extractPathModes(List<String> stopIds, Map<String, List<StopEdge>> adjacencyList) {
         List<TransportMode> modes = new ArrayList<>();
         for (int i = 1; i < stopIds.size(); i++) {
-            String fromId = stopIds.get(i - 1);
-            String toId = stopIds.get(i);
-            StopEdge selectedEdge = selectBestEdge(fromId, toId, adjacencyList);// The best edge between the two stops is selected based on the shortest travel time, its default is bus if no edge or transport mode is found.
-            modes.add(selectedEdge == null || selectedEdge.getTransportMode() == null
-                    ? TransportMode.BUS
-                    : selectedEdge.getTransportMode());
+            StopEdge edge = selectBestEdge(stopIds.get(i - 1), stopIds.get(i), adjacencyList);
+            modes.add(edge == null || edge.getTransportMode() == null ? TransportMode.BUS : edge.getTransportMode());
         }
         return modes;
     }
 
-    // Counts the number of vehicle transfers in a list of transport modes by filtering out walking segments and counting changes in motorized transport modes.
-    private int countVehicleTransfers(List<TransportMode> modes) {
-        List<TransportMode> motorized = new ArrayList<>();
-        for (TransportMode mode : modes) {
-            if (mode != TransportMode.WALK) {
-                motorized.add(mode);
-            }
-        }
-
-        // If there are zero or one motorized segments, there are no transfers, so the method returns 0.
-        if (motorized.size() <= 1) {
-            return 0;
-        }
-
-        // The method iterates through the list of motorized transport modes and counts the number of times the mode changes from one segment to the next,
-        // which indicates a transfer between different vehicles or lines.
-        int transfers = 0;
-        TransportMode previous = motorized.get(0);
-        for (int i = 1; i < motorized.size(); i++) {
-            TransportMode current = motorized.get(i);
-            if (current != previous) {
-                transfers++;
-            }
-            previous = current;
-        }
-
-        return transfers;
-    }
-
-    // Builds a summary of the transport modes used in a journey by filtering out consecutive duplicate modes and formatting the mode names for display.
     private String buildModeSummary(List<TransportMode> modes) {
         List<String> labels = new ArrayList<>();
-        TransportMode previous = null;
-
-        // The method iterates through the list of transport modes and adds a formatted label for each mode to the summary,
-        // while skipping consecutive duplicate modes to create a cleaner and more concise summary of the journey's transport modes.
+        TransportMode prev = null;
         for (TransportMode mode : modes) {
-            if (mode == null || mode == previous) {
-                continue;
-            }
+            if (mode == null || mode == prev) continue;
             labels.add(formatMode(mode));
-            previous = mode;
+            prev = mode;
         }
-
-        if (labels.isEmpty()) {
-            return "Public transport";
-        }
-        return String.join(" → ", labels);  //the formatted mode labels are joined with an arrow symbol to create a clear and visually distinct summary of the transport modes
+        return labels.isEmpty() ? "Public transport" : String.join(" → ", labels);
     }
 
-    //Formats a transport mode enum value into a user-friendly string label for display in the mode summary of a journey option.
     private String formatMode(TransportMode mode) {
         return switch (mode) {
-            case WALK -> "Walk";
-            case BUS -> "Bus";
-            case TRAIN -> "Train";
-            case TRAM, LUAS -> "Tram";
-            case BIKE -> "Bike";
-            case CAR -> "Car";
+            case WALK        -> "Walk";
+            case BUS         -> "Bus";
+            case TRAIN       -> "Train";
+            case TRAM, LUAS  -> "Tram";
+            case BIKE        -> "Bike";
+            case CAR         -> "Car";
         };
     }
 
-    // Computes the total CO2 emissions for a journey using public transport by iterating through the list of stop IDs,
-    // calculating the distance between consecutive stops, and estimating the CO2 emissions for each segment.
     private double computePublicTransportCo2(
             List<String> stopIds,
             Map<String, Stop> stopsById,
             Map<String, List<StopEdge>> adjacencyList
     ) {
-        // The method iterates through the list of stop IDs in the path, calculating the distance between each pair of consecutive stops using the Haversine formula.
         double total = 0.0;
         for (int i = 1; i < stopIds.size(); i++) {
-            String fromId = stopIds.get(i - 1);
-            String toId = stopIds.get(i);
-
-            Stop from = stopsById.get(fromId);
-            Stop to = stopsById.get(toId);
-            if (from == null || to == null) {
-                continue;
-            }
-
-            // The distance between the two stops is calculated using the Haversine formula, which provides the great-circle distance between two points on the Earth's surface based on their latitudes and longitudes.
-            double distanceKm = emissionsCalculator.haversineDistanceKm(
-                    from.getLatitude(),
-                    from.getLongitude(),
-                    to.getLatitude(),
-                    to.getLongitude()
-            );
-
-            // The best edge between the two stops is selected based on the shortest travel time, and the CO2 emissions for that segment are estimated based on the distance and the transport mode of the selected edge.
-            StopEdge selectedEdge = selectBestEdge(fromId, toId, adjacencyList);
-            total += emissionsCalculator.estimateEdgeCo2Grams(
-                    distanceKm,
-                    selectedEdge == null ? null : selectedEdge.getTransportMode()
-            );
+            Stop from = stopsById.get(stopIds.get(i - 1));
+            Stop to   = stopsById.get(stopIds.get(i));
+            if (from == null || to == null) continue;
+            double distKm = emissionsCalculator.haversineDistanceKm(
+                    from.getLatitude(), from.getLongitude(), to.getLatitude(), to.getLongitude());
+            StopEdge edge = selectBestEdge(stopIds.get(i - 1), stopIds.get(i), adjacencyList);
+            total += emissionsCalculator.estimateEdgeCo2Grams(distKm, edge == null ? null : edge.getTransportMode());
         }
         return total;
     }
 
-    // Selects the best edge between two stops based on the shortest travel time, which is used to determine the transport mode for CO2 estimation in the public transport route.
     private StopEdge selectBestEdge(String fromId, String toId, Map<String, List<StopEdge>> adjacencyList) {
         StopEdge best = null;
         for (StopEdge edge : adjacencyList.getOrDefault(fromId, List.of())) {
-            if (!toId.equals(edge.getToStopId())) {
-                continue;
-            }
-            if (best == null || edge.getTravelTimeSeconds() < best.getTravelTimeSeconds()) {
-                best = edge;
-            }
+            if (!toId.equals(edge.getToStopId())) continue;
+            if (best == null || edge.getTravelTimeSeconds() < best.getTravelTimeSeconds()) best = edge;
         }
         return best;
     }
 
-    // Normalizes a value to a 0-1 scale based on the provided minimum and maximum values, which is used in the scoring process to compare journey options across different attributes.
     private double normalize(double value, double min, double max) {
-        if (Double.compare(max, min) == 0) {
-            return 0.0;
-        }
-        return (value - min) / (max - min);
+        return Double.compare(max, min) == 0 ? 0.0 : (value - min) / (max - min);
     }
 
-    // Implements Dijkstra's algorithm to find the shortest path between two stops based on a custom edge weight function.
     private PathResult dijkstra(
-            String originStopId,
-            String destinationStopId,
+            String originId,
+            String destinationId,
             Map<String, List<StopEdge>> adjacencyList,
-            EdgeWeightFunction edgeWeightFunction
+            EdgeWeightFunction weightFn
     ) {
-        // The method uses a priority queue to explore the stops in order of their known shortest distance from the origin,
-        // and it maintains a map of distances and previous stops to reconstruct the path once the destination is reached.
-        Map<String, Integer> distance = new HashMap<>();
-        Map<String, String> previous = new HashMap<>();
-        PriorityQueue<NodeCost> queue = new PriorityQueue<>(Comparator.comparingInt(NodeCost::cost));
+        Map<String, Integer>     distance = new HashMap<>();
+        Map<String, String>      previous = new HashMap<>();
+        PriorityQueue<NodeCost>  queue    = new PriorityQueue<>(Comparator.comparingInt(NodeCost::cost));
 
-        // The distance to the origin stop is initialized to 0, and the origin stop is added to the priority queue to start the algorithm.
-        distance.put(originStopId, 0);
-        queue.add(new NodeCost(originStopId, 0));
+        distance.put(originId, 0);
+        queue.add(new NodeCost(originId, 0));
 
-        // The algorithm continues to explore stops until the priority queue is empty, checking each stop's neighbors and updating distances and previous stops as shorter paths are found.
         while (!queue.isEmpty()) {
             NodeCost current = queue.poll();
-            int knownDistance = distance.getOrDefault(current.stopId(), Integer.MAX_VALUE);
-            if (current.cost() > knownDistance) {
-                continue;
-            }
+            if (current.cost() > distance.getOrDefault(current.stopId(), Integer.MAX_VALUE)) continue;
+            if (current.stopId().equals(destinationId)) break;
 
-            // If the destination stop is reached, the algorithm breaks out of the loop to reconstruct the path. If the destination is not reachable, the method will eventually return null.
-            if (current.stopId().equals(destinationStopId)) {
-                break;
-            }
-
-            // The method iterates through the neighbors of the current stop, calculating the candidate distance to each neighbor based on the current distance and the weight of the edge connecting them.
-            List<StopEdge> neighbours = adjacencyList.getOrDefault(current.stopId(), Collections.emptyList());
-            for (StopEdge edge : neighbours) {
-                int edgeWeight = Math.max(1, edgeWeightFunction.weight(edge));
-                int candidate = current.cost() + edgeWeight;
-
-                int existing = distance.getOrDefault(edge.getToStopId(), Integer.MAX_VALUE);
-                if (candidate < existing) {
+            for (StopEdge edge : adjacencyList.getOrDefault(current.stopId(), Collections.emptyList())) {
+                int candidate = current.cost() + Math.max(1, weightFn.weight(edge));
+                if (candidate < distance.getOrDefault(edge.getToStopId(), Integer.MAX_VALUE)) {
                     distance.put(edge.getToStopId(), candidate);
                     previous.put(edge.getToStopId(), current.stopId());
                     queue.add(new NodeCost(edge.getToStopId(), candidate));
@@ -818,71 +1116,84 @@ public class SearchJourneyUseCase {
             }
         }
 
-        // After the algorithm completes, the method checks if the destination stop has a known distance. If it does not, it returns null to indicate that no path exists between the origin and destination.
-        if (!distance.containsKey(destinationStopId)) {
-            return null;
-        }
+        if (!distance.containsKey(destinationId)) return null;
 
-        // If a path exists, the method reconstructs the path by backtracking from the destination stop to the origin stop using the previous stops map, and it calculates the total duration of the path based on the edge weights.
         LinkedList<String> path = new LinkedList<>();
-        String cursor = destinationStopId;
+        String cursor = destinationId;
         path.addFirst(cursor);
         while (previous.containsKey(cursor)) {
             cursor = previous.get(cursor);
             path.addFirst(cursor);
         }
+        if (!path.getFirst().equals(originId)) return null;
 
-        if (!path.getFirst().equals(originStopId)) {
-            return null;
-        }
-
-        int actualDuration = computeActualDuration(path, adjacencyList);
-        return new PathResult(path, actualDuration);
+        return new PathResult(path, computeActualDuration(path, adjacencyList));
     }
 
     private int computeActualDuration(List<String> path, Map<String, List<StopEdge>> adjacencyList) {
         int total = 0;
         for (int i = 1; i < path.size(); i++) {
-            String from = path.get(i - 1);
-            String to = path.get(i);
-
             int best = Integer.MAX_VALUE;
-            for (StopEdge edge : adjacencyList.getOrDefault(from, List.of())) {
-                if (to.equals(edge.getToStopId())) {
+            for (StopEdge edge : adjacencyList.getOrDefault(path.get(i - 1), List.of())) {
+                if (path.get(i).equals(edge.getToStopId())) {
                     best = Math.min(best, edge.getTravelTimeSeconds());
                 }
             }
-
-            if (best == Integer.MAX_VALUE) {
-                return Integer.MAX_VALUE;
-            }
+            if (best == Integer.MAX_VALUE) return Integer.MAX_VALUE;
             total += best;
         }
-
         return total;
     }
+
+    private static String stateKey(String stopId, String routeId) {
+        return stopId + ":" + (routeId != null ? routeId : "");
+    }
+
+    // -------------------------------------------------------------------------
+    // Inner types
+    // -------------------------------------------------------------------------
 
     private interface EdgeWeightFunction {
         int weight(StopEdge edge);
     }
 
-    private record NodeCost(String stopId, int cost) {
-    }
+    /** State node for the schedule-aware Dijkstra priority queue. */
+    private record TripState(
+            String              stopId,
+            String              routeId,
+            int                 arrivalTime,
+            int                 transfers,
+            int                 score,
+            TripState           parent,
+            ScheduledConnection connection
+    ) {}
 
-    private record PathResult(List<String> stopIds, int totalDurationSeconds) {
-    }
+    /** One transit leg: board at fromStopId on a named route, alight at toStopId. */
+    private record PathLeg(
+            String        fromStopId,
+            String        toStopId,
+            String        routeShortName,
+            TransportMode mode,
+            int           departureSeconds,
+            int           arrivalSeconds
+    ) {}
 
-        private record RoutingAnchors(
+    /** A complete journey found by scheduleAwareDijkstra. */
+    private record ScheduledPath(
+            List<PathLeg> legs,
+            int           totalDurationSeconds,
+            int           transfers
+    ) {}
+
+    // Fallback Dijkstra support types
+    private record NodeCost(String stopId, int cost) {}
+    private record PathResult(List<String> stopIds, int totalDurationSeconds) {}
+    private record RoutingAnchors(
             String routingOriginStopId,
             String routingDestinationStopId,
-            int originAccessSeconds,
-            int destinationAccessSeconds
-        ) {
-        }
-
-        private record StopDistance(String stopId, double distanceKm) {
-        }
-
-    private record ScoredJourney(JourneyOption option, double score) {
-    }
+            int    originAccessSeconds,
+            int    destinationAccessSeconds
+    ) {}
+    private record StopDistance(String stopId, double distanceKm) {}
+    private record ScoredJourney(JourneyOption option, double score) {}
 }

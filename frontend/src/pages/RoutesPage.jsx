@@ -1,11 +1,8 @@
-/**
- * Handles stop selection, autocomplete, and journey search.
- * Fetches stop suggestions from the backend and displays
- * journey alternatives with comparison visuals.
- */
+// RoutesPage component allows users to search for journey options between an origin and destination, either by typing stop names or picking points on the map. It fetches route options from the backend and displays them in a list, along with a map visualization of the routes. The user can also specify an "arrive by" time to filter routes accordingly. The page includes error handling and loading states, and compares public transport options against a car baseline in terms of duration and CO₂ emissions.
+// The component manages a variety of state variables to track user input, search results, loading states, and errors. It includes functions to handle user interactions such as changing the origin/destination inputs, picking locations on the map, and initiating the search for routes. The search results are displayed in a list format, and the map shows the routes visually with different colors for public transport and car options.
 
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import BottomNav from "../components/BottomNav";
@@ -22,13 +19,15 @@ L.Icon.Default.mergeOptions({
 const BACKEND = "http://localhost:8080";
 
 // const BACKEND = "https://api.routesense.com";
-function RoutesPage({ activePage, onNavigate }) {
+function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
   const [originText, setOriginText] = useState("");
   const [destinationText, setDestinationText] = useState("");
 
   const [originStop, setOriginStop] = useState(null);
-  const [originPin, setOriginPin] = useState(null); // { lat, lng } from map click
+  const [originPin, setOriginPin] = useState(null);      // { lat, lng } from map click
   const [destinationStop, setDestinationStop] = useState(null);
+  const [destinationPin, setDestinationPin] = useState(null); // { lat, lng } from map click
+  const [mapMode, setMapMode] = useState("origin"); // "origin" | "destination"
 
   const [originOptions, setOriginOptions] = useState([]);
   const [destinationOptions, setDestinationOptions] = useState([]);
@@ -44,8 +43,13 @@ function RoutesPage({ activePage, onNavigate }) {
   const [carBaselineCo2Grams, setCarBaselineCo2Grams] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
 
+  const [arriveByTime, setArriveByTime] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [routeGeometries, setRouteGeometries] = useState([]);
+  const [carGeometry, setCarGeometry] = useState(null);
+  const [walkGeometries, setWalkGeometries] = useState([]);
 
   // Fetches stop suggestions from the backend based on the query, and updates the options and loading state accordingly.
   async function fetchStopSuggestions(query, setOptions, setLoadingFlag) {
@@ -107,10 +111,22 @@ function RoutesPage({ activePage, onNavigate }) {
     setOriginPin(null);
   }
 
+  function handleDestMapPick(coords) {
+    setDestinationPin(coords);
+    setDestinationStop(null);
+    setDestinationText("");
+    setDestinationOptions([]);
+  }
+
+  function clearDestinationPin() {
+    setDestinationPin(null);
+  }
+
   // Handles changes to the destination input field, updating state and fetching new suggestions with debouncing to avoid excessive requests.
   function onDestinationChange(value) {
     setDestinationText(value);
     setDestinationStop(null);
+    setDestinationPin(null); // typing clears any map pin
 
     if (destDebounceRef.current) {
       clearTimeout(destDebounceRef.current);
@@ -140,25 +156,37 @@ function RoutesPage({ activePage, onNavigate }) {
     setHasSearched(true);
     setError("");
 
-    // Validate that we have either an origin stop or an origin pin, and that we have a destination stop. If not, show an error message and clear any existing routes or baseline data.
-    const hasOrigin = originStop?.id || originPin;
-    if (!hasOrigin || !destinationStop?.id) {
+    const hasOrigin      = originStop?.id || originPin;
+    const hasDestination = destinationStop?.id || destinationPin;
+    if (!hasOrigin || !hasDestination) {
       setPublicRoutes([]);
       setCarBaseline(null);
       setCarBaselineCo2Grams(0);
-      setError("Please select a destination stop and either type an origin stop or pick a point on the map.");
+      setError("Please set both an origin and a destination — type a stop name or pick a point on the map.");
       return;
     }
 
-    // Make a POST request to the backend with the origin and destination information to search for journey options. The request body includes either the origin stop ID or the origin coordinates from the map, along with the destination stop ID.
     setLoading(true);
     try {
-      const body = { destinationStopId: destinationStop.id };
+      const body = {};
       if (originStop?.id) {
         body.originStopId = originStop.id;
       } else {
         body.originLat = originPin.lat;
         body.originLon = originPin.lng;
+      }
+      if (destinationStop?.id) {
+        body.destinationStopId = destinationStop.id;
+      } else {
+        body.destinationLat = destinationPin.lat;
+        body.destinationLon = destinationPin.lng;
+      }
+
+      // If the user set an "arrive by" time, send it directly so the backend can
+      // search from 3 hours before and filter out routes that arrive too late.
+      if (arriveByTime) {
+        const [hours, minutes] = arriveByTime.split(":").map(Number);
+        body.arriveBySeconds = hours * 3600 + minutes * 60;
       }
 
       // The backend is expected to return a JSON response containing an array of journey options, each with details like duration, CO₂ emissions, and transport mode, as well as a car baseline option for comparison. We parse the response and update the state with the new routes and baseline data, or show an error message if the request fails.
@@ -194,7 +222,28 @@ function RoutesPage({ activePage, onNavigate }) {
       setPublicRoutes(ptOptions);
       setCarBaseline(carOption);
       setCarBaselineCo2Grams(responseCarBaselineCo2);
+      setRouteGeometries([]);
+      setCarGeometry(null);
+      setWalkGeometries([]);
       setError("");
+
+      // Car baseline geometry comes directly from ORS via the backend (reliable, no external call needed).
+      // Fall back to OSRM only if the backend didn't return it (e.g. no ORS key configured).
+      if (data?.carRouteGeometry && Array.isArray(data.carRouteGeometry)) {
+        setCarGeometry(data.carRouteGeometry);
+      } else if (carOption) {
+        fetchOsrmGeometry(carOption.stops).then(setCarGeometry);
+      }
+
+      // Fetch road-following geometry from OSRM for PT routes (non-blocking)
+      fetchAllOsrmGeometries(ptOptions).then(setRouteGeometries);
+
+      // Fetch foot-profile OSRM geometry for walk legs (origin pin → first stop, last stop → dest pin)
+      const pinLat     = originPin?.lat ?? null;
+      const pinLng     = originPin?.lng ?? null;
+      const destPinLat = destinationPin?.lat ?? null;
+      const destPinLng = destinationPin?.lng ?? null;
+      fetchAllWalkGeometries(ptOptions, pinLat, pinLng, destPinLat, destPinLng).then(setWalkGeometries);
     } catch (requestError) {
       console.error("Journey search failed:", requestError);
       setPublicRoutes([]);
@@ -209,18 +258,15 @@ function RoutesPage({ activePage, onNavigate }) {
   // Determines whether to show a message about missing input based on whether the user has attempted a search and whether the required inputs are present. 
   // This helps guide the user to provide the necessary information to perform a search.
   const showMissingInput =
-    hasSearched && (!(originStop?.id || originPin) || !destinationStop?.id);
+    hasSearched && (!(originStop?.id || originPin) || !(destinationStop?.id || destinationPin));
 
   return (
-    // The main layout of the RoutesPage, which includes a header, a left section for input and route alternatives, and a right section for the map and comparison panel.
-    //  The page also includes a bottom navigation bar.
     <div className="page routes-page">
       <div className="routes-header">
         <h2 className="routes-title">Route View</h2>
         <div className="routes-subtitle">Supporting decision-making</div>
       </div>
 
-      // The main content area is divided into two sections: the left side for user input and displaying route alternatives, and the right side for the map and comparison panel. This layout allows users to easily interact with the inputs and see the resulting routes and comparisons in a clear and organized way.
       <div className="routes-layout">
         <section className="routes-left">
           <div className="input-card">
@@ -246,6 +292,20 @@ function RoutesPage({ activePage, onNavigate }) {
               selected={destinationStop}
             />
 
+            <div className="input-row">
+              <span className="pin">🕐</span>
+              <div className="time-input-wrap">
+                <span className="time-label">Arrive at (optional)</span>
+                <input
+                  type="time"
+                  value={arriveByTime}
+                  onChange={(e) => setArriveByTime(e.target.value)}
+                  className="text-input"
+                />
+                <span className="time-hint">Leave blank to search from now</span>
+              </div>
+            </div>
+
             <button className="go-btn" type="button" onClick={handleGo}>
               Go
             </button>
@@ -254,7 +314,7 @@ function RoutesPage({ activePage, onNavigate }) {
               <div className="empty-state" style={{ marginTop: 10 }}>
                 {!(originStop?.id || originPin)
                   ? "Please type an origin stop or pick a point on the map."
-                  : "Please select a destination stop from the dropdown."}
+                  : "Please type a destination stop or pick a point on the map."}
               </div>
             )}
           </div>
@@ -276,6 +336,7 @@ function RoutesPage({ activePage, onNavigate }) {
                   key={`${route.durationSeconds}-${route.transfers}-${index}`}
                   route={route}
                   carBaselineCo2Grams={carBaselineCo2Grams}
+                  onSelect={onSelectJourney ? (r) => onSelectJourney(r, carBaselineCo2Grams) : undefined}
                 />
               ))}
 
@@ -286,18 +347,51 @@ function RoutesPage({ activePage, onNavigate }) {
 
         <section className="routes-right">
           <div className="panel origin-map-panel">
-            <div className="panel-label">Pick your start point on the map</div>
-            <div className="origin-map-wrap">
-              <OriginPickerMap pin={originPin} onPick={handleMapPick} />
+            <div className="panel-label">Pick points on the map</div>
+            <div className="map-mode-toggle">
+              <button
+                type="button"
+                className={`map-mode-btn${mapMode === "origin" ? " active" : ""}`}
+                onClick={() => setMapMode("origin")}
+              >
+                🟢 Set origin
+              </button>
+              <button
+                type="button"
+                className={`map-mode-btn${mapMode === "destination" ? " active" : ""}`}
+                onClick={() => setMapMode("destination")}
+              >
+                🔴 Set destination
+              </button>
             </div>
-            {originPin ? (
-              <div className="pin-info">
-                <span>📍 {originPin.lat.toFixed(4)}, {originPin.lng.toFixed(4)}</span>
-                <button className="clear-pin-btn" type="button" onClick={clearOriginPin}>✕ Clear</button>
-              </div>
-            ) : (
-              <div className="panel-empty">Click anywhere on the map to set your start point, or type a stop name on the left.</div>
-            )}
+            <div className="origin-map-wrap">
+              <OriginPickerMap
+                originPin={originPin}
+                destinationPin={destinationPin}
+                mapMode={mapMode}
+                onPickOrigin={handleMapPick}
+                onPickDestination={handleDestMapPick}
+                routeLines={buildRouteLines(publicRoutes, carBaseline, routeGeometries, carGeometry, originPin, walkGeometries, destinationPin)}
+              />
+            </div>
+            <div className="pin-info-row">
+              {originPin ? (
+                <div className="pin-info">
+                  <span>🟢 {originPin.lat.toFixed(4)}, {originPin.lng.toFixed(4)}</span>
+                  <button className="clear-pin-btn" type="button" onClick={clearOriginPin}>✕</button>
+                </div>
+              ) : (
+                <div className="panel-empty" style={{ fontSize: 12 }}>No origin pin set</div>
+              )}
+              {destinationPin ? (
+                <div className="pin-info">
+                  <span>🔴 {destinationPin.lat.toFixed(4)}, {destinationPin.lng.toFixed(4)}</span>
+                  <button className="clear-pin-btn" type="button" onClick={clearDestinationPin}>✕</button>
+                </div>
+              ) : (
+                <div className="panel-empty" style={{ fontSize: 12 }}>No destination pin set</div>
+              )}
+            </div>
           </div>
 
           {hasSearched && (publicRoutes.length > 0 || carBaseline) && (
@@ -314,9 +408,222 @@ function RoutesPage({ activePage, onNavigate }) {
   );
 }
 
-// The StopAutocomplete component renders an input field with autocomplete functionality for selecting stops. 
-// It also supports selecting a location on the map as an origin, and displays a dropdown of suggestions based on user input. 
-// The component manages its own open/close state for the dropdown and handles clicks outside to close it.
+/**
+ * Fetches a road-following polyline from OSRM for an array of stop objects.
+ * Returns an array of [lat, lng] pairs, or null if the request fails.
+ */
+async function fetchOsrmGeometry(stops) {
+  const valid = (stops || []).filter((s) => s.latitude != null && s.longitude != null);
+  if (valid.length < 2) return null;
+
+  // Subsample to at most 25 waypoints to stay within OSRM limits
+  const sampled = valid.length <= 25 ? valid : (() => {
+    const step = (valid.length - 1) / 24;
+    return Array.from({ length: 25 }, (_, i) => valid[Math.round(i * step)]);
+  })();
+
+  const coords = sampled.map((s) => `${s.longitude},${s.latitude}`).join(";");
+  try {
+    const res = await fetch(
+      `https://routing.openstreetmap.de/routed-car/route/v1/driving/${coords}?geometries=geojson&overview=full`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.code === "Ok" && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+    }
+  } catch {
+    // timeout or network error — fall back to straight lines
+  }
+  return null;
+}
+
+/**
+ * Returns the transit-only stops for a route, stripping any trailing Walk leg destination.
+ * This ensures OSRM only routes along the bus path, not the final walk to destination.
+ */
+function getBusStops(route) {
+  const legs = route.legs || [];
+  const stops = route.stops || [];
+  const lastLeg = legs[legs.length - 1];
+  if (lastLeg && lastLeg.mode === "Walk" && stops.length > 1) {
+    return stops.slice(0, stops.length - 1);
+  }
+  return stops;
+}
+
+/** Fetch OSRM geometry for all PT routes in parallel (bus portion only). */
+async function fetchAllOsrmGeometries(routes) {
+  return Promise.all((routes || []).map((r) => fetchOsrmGeometry(getBusStops(r))));
+}
+
+/**
+ * Fetches a road-following walk polyline from OSRM (foot profile) between two points.
+ * Returns [[lat,lng], ...] or null on failure.
+ */
+async function fetchOsrmFootLine(lat1, lng1, lat2, lng2) {
+  const coords = `${lng1},${lat1};${lng2},${lat2}`;
+  try {
+    const res = await fetch(
+      `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coords}?geometries=geojson&overview=full`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.code === "Ok" && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+    }
+  } catch {
+    // timeout or network error — caller falls back to straight line
+  }
+  return null;
+}
+
+/**
+ * For each PT route, fetches foot-profile OSRM lines for:
+ *   - origin walk:  originPin → first bus stop (if pinLat/pinLng supplied)
+ *   - dest walk:    last bus stop → destination stop (if route ends with a Walk leg)
+ *   - destPinLine:  last stop → destination pin (if destPinLat/destPinLng supplied)
+ * Returns an array of { originLine, destLine, destPinLine } (any may be null).
+ */
+async function fetchAllWalkGeometries(routes, pinLat, pinLng, destPinLat, destPinLng) {
+  return Promise.all((routes || []).map(async (route) => {
+    const allStops  = route.stops || [];
+    const legs      = route.legs  || [];
+    const lastLeg   = legs[legs.length - 1];
+    const hasDestWalk = lastLeg && lastLeg.mode === "Walk" && allStops.length >= 2;
+    const busStops  = hasDestWalk ? allStops.slice(0, allStops.length - 1) : allStops;
+
+    let originLine  = null;
+    let destLine    = null;
+    let destPinLine = null;
+
+    if (pinLat != null && busStops.length > 0) {
+      const first = busStops[0];
+      if (first.latitude != null) {
+        originLine = await fetchOsrmFootLine(pinLat, pinLng, first.latitude, first.longitude);
+      }
+    }
+
+    if (hasDestWalk) {
+      const walkFrom = allStops[allStops.length - 2];
+      const walkTo   = allStops[allStops.length - 1];
+      if (walkFrom?.latitude != null && walkTo?.latitude != null) {
+        destLine = await fetchOsrmFootLine(
+          walkFrom.latitude, walkFrom.longitude,
+          walkTo.latitude, walkTo.longitude
+        );
+      }
+    }
+
+    // Walk from the last stop in the route to the destination pin (if a dest pin was set)
+    if (destPinLat != null && allStops.length > 0) {
+      const lastStop = allStops[allStops.length - 1];
+      if (lastStop?.latitude != null) {
+        destPinLine = await fetchOsrmFootLine(
+          lastStop.latitude, lastStop.longitude,
+          destPinLat, destPinLng
+        );
+      }
+    }
+
+    return { originLine, destLine, destPinLine };
+  }));
+}
+
+/**
+ * Converts route options into Leaflet Polyline data with colours.
+ *   Recommended PT  → green (solid)
+ *   2nd PT          → amber (solid)
+ *   Other PT        → red   (solid)
+ *   Walk legs       → gray  (dashed)
+ *   Car baseline    → blue  (solid)
+ *
+ * Walk segments (origin pin → first bus stop, last bus stop → destination)
+ * are rendered as separate dashed gray lines so the user can see the
+ * walking portions clearly, like Google Maps.
+ */
+function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry = null, originPin = null, walkGeometries = [], destinationPin = null) {
+  const lines = [];
+  // Non-recommended routes get amber → red → purple; never green (green = recommended only).
+  const nonRecColors = ["#f59e0b", "#ef4444", "#8b5cf6"];
+  const WALK_COLOR   = "#6b7788";
+  const WALK_DASH    = "8 8";
+
+  // Draw non-recommended routes first so the recommended one renders on top.
+  const drawOrder = [
+    ...publicRoutes.map((r, i) => ({ route: r, index: i })).filter(({ route }) => !route.recommended),
+    ...publicRoutes.map((r, i) => ({ route: r, index: i })).filter(({ route }) => route.recommended),
+  ];
+  let nonRecIdx = 0;
+
+  drawOrder.forEach(({ route, index }) => {
+    const allStops    = route.stops || [];
+    const legs        = route.legs  || [];
+    const lastLeg     = legs[legs.length - 1];
+    const hasDestWalk = lastLeg && lastLeg.mode === "Walk" && allStops.length >= 2;
+
+    // ── Bus portion ──────────────────────────────────────────────────────────
+    const busStops  = hasDestWalk ? allStops.slice(0, allStops.length - 1) : allStops;
+    const fallback  = busStops
+      .filter((s) => s.latitude != null && s.longitude != null)
+      .map((s) => [s.latitude, s.longitude]);
+    const positions  = geometries[index] || fallback;
+    const routeColor = route.recommended ? "#22c55e" : (nonRecColors[nonRecIdx++] || "#ef4444");
+
+    if (positions.length >= 2) {
+      lines.push({ positions, color: routeColor, weight: route.recommended ? 6 : 4 });
+    }
+
+    const wg = walkGeometries[index] || {};
+
+    // ── Walk: origin pin → first bus stop ────────────────────────────────────
+    if (originPin && busStops.length > 0) {
+      const first = busStops[0];
+      if (first.latitude != null && first.longitude != null) {
+        const walkPositions = wg.originLine ||
+          [[originPin.lat, originPin.lng], [first.latitude, first.longitude]];
+        lines.push({ positions: walkPositions, color: WALK_COLOR, weight: 3, dashArray: WALK_DASH });
+      }
+    }
+
+    // ── Walk: last bus stop → destination stop (backend walk leg) ────────────
+    if (hasDestWalk) {
+      const walkFrom = allStops[allStops.length - 2];
+      const walkTo   = allStops[allStops.length - 1];
+      if (walkFrom?.latitude != null && walkTo?.latitude != null) {
+        const walkPositions = wg.destLine ||
+          [[walkFrom.latitude, walkFrom.longitude], [walkTo.latitude, walkTo.longitude]];
+        lines.push({ positions: walkPositions, color: WALK_COLOR, weight: 3, dashArray: WALK_DASH });
+      }
+    }
+
+    // ── Walk: last stop → destination pin ────────────────────────────────────
+    if (destinationPin && allStops.length > 0) {
+      const lastStop = allStops[allStops.length - 1];
+      if (lastStop?.latitude != null) {
+        const walkPositions = wg.destPinLine ||
+          [[lastStop.latitude, lastStop.longitude], [destinationPin.lat, destinationPin.lng]];
+        lines.push({ positions: walkPositions, color: WALK_COLOR, weight: 3, dashArray: WALK_DASH });
+      }
+    }
+  });
+
+  if (carBaseline) {
+    const stops = carBaseline.stops || [];
+    const fallback = stops
+      .filter((s) => s.latitude != null && s.longitude != null)
+      .map((s) => [s.latitude, s.longitude]);
+    const positions = carGeometry || fallback;
+    if (positions.length >= 2) {
+      lines.push({ positions, color: "#3b82f6", weight: 3 });
+    }
+  }
+
+  return lines;
+}
+
 export default RoutesPage;
 
 // The StopAutocomplete component renders an input field with autocomplete functionality for selecting stops.
@@ -426,47 +733,151 @@ function StopAutocomplete({
   );
 }
 
-// The RouteCard component renders a card for a single route option, displaying key information such as duration, transfers, estimated CO₂ emissions, and the stops involved in the route.
-function RouteCard({ route, carBaselineCo2Grams }) {
+function RouteCard({ route, carBaselineCo2Grams, onSelect }) {
   const durationSeconds = route.durationSeconds ?? route.totalDurationSeconds ?? 0;
   const durationMinutes = secondsToMins(durationSeconds);
-  const co2Grams = route.co2Grams || 0;
-  const co2SavedGrams = Math.max(0, carBaselineCo2Grams - co2Grams);
-  const modeLabel = route.modeSummary || formatRouteType(route.type);
+  const co2Grams        = route.co2Grams || 0;
+  const co2SavedGrams   = Math.max(0, carBaselineCo2Grams - co2Grams);
+  const legs            = groupLegsByService(route.legs || []);
+  const allStops        = route.stops || [];
 
   return (
     <div className={`route-card ${route.recommended ? "recommended" : ""}`}>
-      <div className="route-top">
-        <div className="route-legs">{renderStops(route.stops)}</div>
-        {route.recommended && <div className="badge">★ Recommended</div>}
-      </div>
-
-      <div className="route-bottom">
-        <div className="route-metrics">
-          <div className="metric">
-            <div className="metric-value">{durationMinutes} min</div>
-            <div className="metric-label">Total time</div>
-          </div>
-
-          <div className="metric">
-            <div className="metric-value">{route.transfers || 0}</div>
-            <div className="metric-label">Transfers</div>
-          </div>
-
-          <div className="metric">
-            <div className="metric-value">{formatCo2(co2Grams)}</div>
-            <div className="metric-label">Estimated CO₂</div>
-          </div>
+      {/* Header row: badge + key metrics */}
+      <div className="route-header">
+        <div className="route-header-left">
+          {route.recommended
+            ? <span className="badge">★ Recommended</span>
+            : <span className="badge badge-secondary">Option</span>
+          }
         </div>
-
-        {route.recommended && route.recommendationReason && (
-          <div className="route-notes">{route.recommendationReason}</div>
-        )}
-
-        <div className="route-notes">Mode: {modeLabel}</div>
-        <div className="route-notes">CO₂ saved vs car: {formatCo2(co2SavedGrams)}</div>
-        <div className="route-notes">{route.stops?.length || 0} stops</div>
+        <div className="route-header-metrics">
+          <span className="metric-chip"><strong>{durationMinutes}</strong> min</span>
+          <span className="metric-chip">
+            <strong>{route.transfers || 0}</strong> transfer{route.transfers !== 1 ? "s" : ""}
+          </span>
+          <span className="metric-chip metric-chip-co2">
+            <strong>{formatCo2(co2Grams)}</strong> CO₂
+          </span>
+        </div>
       </div>
+
+      {/* Recommendation reason */}
+      {route.recommended && route.recommendationReason && (
+        <div className="route-reason">{route.recommendationReason}</div>
+      )}
+
+      {/* Legs — one collapsible row per leg */}
+      <div className="route-legs-list">
+        {legs.length > 0 ? (
+          legs.map((leg, i) => (
+            <LegRow
+              key={i}
+              leg={leg}
+              stops={getStopsForLeg(allStops, leg.fromStopName, leg.toStopName)}
+              isLast={i === legs.length - 1}
+            />
+          ))
+        ) : (
+          <div className="route-no-legs">
+            {route.modeSummary || formatRouteType(route.type)}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="route-footer">
+        <span>CO₂ saved vs car: <strong>{formatCo2(co2SavedGrams)}</strong></span>
+        {onSelect && (
+          <button
+            type="button"
+            className="select-route-btn"
+            onClick={() => onSelect(route)}
+          >
+            Select this route →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Returns the slice of allStops between fromName and toName (inclusive). */
+function getStopsForLeg(allStops, fromName, toName) {
+  const fromIdx = allStops.findIndex((s) => s.name === fromName);
+  if (fromIdx === -1) return [];
+  const toIdx = allStops.findIndex((s, i) => i > fromIdx && s.name === toName);
+  if (toIdx === -1) return [];
+  return allStops.slice(fromIdx, toIdx + 1);
+}
+
+/**
+ * Groups consecutive legs with the same serviceName into one entry.
+ * e.g. 20 individual Bus 405 segments become one group:
+ *   { serviceName: "Bus 405", fromStopName: "Gleann Dara", toStopName: "Bohermore Cemetery",
+ *     departureTime: "10:55", arrivalTime: "11:25" }
+ */
+function groupLegsByService(legs) {
+  if (!legs || legs.length === 0) return [];
+  const groups = [];
+  let current = { ...legs[0] };
+
+  for (let i = 1; i < legs.length; i++) {
+    const leg = legs[i];
+    if (leg.serviceName === current.serviceName) {
+      // extend the current group — update end stop and arrival time
+      current.toStopName = leg.toStopName;
+      current.arrivalTime = leg.arrivalTime;
+    } else {
+      groups.push(current);
+      current = { ...leg };
+    }
+  }
+  groups.push(current);
+  return groups;
+}
+
+/** A single collapsible leg row inside a RouteCard. */
+function LegRow({ leg, stops, isLast }) {
+  const [expanded, setExpanded] = useState(false);
+  const stopCount = stops.length;
+
+  return (
+    <div className={`leg-row ${isLast ? "leg-row-last" : ""}`}>
+      <button
+        className="leg-row-header"
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
+        <span className="leg-service-chip">{leg.serviceName}</span>
+        <span className="leg-route-text">
+          {leg.fromStopName}
+          <span className="leg-arrow-inline"> → </span>
+          {leg.toStopName}
+        </span>
+        <span className="leg-time-text">
+          {leg.departureTime} – {leg.arrivalTime}
+        </span>
+        {stopCount > 2 && (
+          <span className="leg-stop-count">{stopCount} stops</span>
+        )}
+        <span className="leg-chevron">{expanded ? "▼" : "▶"}</span>
+      </button>
+
+      {expanded && stops.length > 0 && (
+        <div className="leg-stops-list">
+          {stops.map((stop, i) => (
+            <div key={i} className="leg-stop-item">
+              <span className={`leg-stop-dot ${i === 0 || i === stops.length - 1 ? "leg-stop-dot-end" : ""}`} />
+              <span className="leg-stop-name">{stop.name}</span>
+              {stop.departureTime && (
+                <span className="leg-stop-time">{stop.departureTime}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -477,55 +888,25 @@ function CarBaselineCard({ route }) {
   const durationSeconds = route.durationSeconds ?? route.totalDurationSeconds ?? 0;
   return (
     <div className="route-card" style={{ borderStyle: "dashed" }}>
-      <div className="route-top">
-        <div className="route-legs">Driving (baseline estimate)</div>
-      </div>
-
-      <div className="route-bottom">
-        <div className="route-metrics">
-          <div className="metric">
-            <div className="metric-value">{secondsToMins(durationSeconds)} min</div>
-            <div className="metric-label">Estimated drive time</div>
-          </div>
-
-          <div className="metric">
-            <div className="metric-value">0</div>
-            <div className="metric-label">Transfers</div>
-          </div>
-
-          <div className="metric">
-            <div className="metric-value">{formatCo2(route.co2Grams || 0)}</div>
-            <div className="metric-label">Estimated CO₂</div>
-          </div>
+      <div className="route-header">
+        <div className="route-header-left">
+          <span className="badge" style={{ background: "#6b7788" }}>🚗 Car baseline</span>
         </div>
-
-        <div className="route-notes">Comparison baseline only (never auto-recommended).</div>
+        <div className="route-header-metrics">
+          <span className="metric-chip"><strong>{secondsToMins(durationSeconds)}</strong> min</span>
+          <span className="metric-chip">0 transfers</span>
+          <span className="metric-chip" style={{ color: "#b45309", background: "rgba(180,90,0,0.08)" }}>
+            <strong>{formatCo2(route.co2Grams || 0)}</strong> CO₂
+          </span>
+        </div>
+      </div>
+      <div className="route-footer" style={{ color: "#9aa3b0", fontStyle: "italic" }}>
+        Comparison baseline only — not a recommended option.
       </div>
     </div>
   );
 }
 
-// Renders the sequence of stops for a route option, showing the stop names with icons and arrows between them. 
-// If no stop information is available, it shows a generic "Route option" label.
-function renderStops(stops = []) {
-  const names = stops.map((stop) => stop.name).filter(Boolean);
-
-  if (names.length === 0) {
-    return <div className="legs-row">Route option</div>;
-  }
-
-  return (
-    <div className="legs-row">
-      {names.map((name, index) => (
-        <span key={`${name}-${index}`} className="leg-item">
-          <span className="leg-icon">📍</span>
-          <span>{name}</span>
-          {index !== names.length - 1 && <span className="leg-arrow">›</span>}
-        </span>
-      ))}
-    </div>
-  );
-}
 
 /**
  * Shows a compact bar chart comparing all route options by time and CO₂.
@@ -593,22 +974,59 @@ function ComparisonPanel({ publicRoutes, carBaseline }) {
 
 /**
  * Registers a click listener on the Leaflet map.
+ * Routes the click to onPickOrigin or onPickDestination depending on mapMode.
  * Must be rendered inside a MapContainer.
  */
-function MapClickHandler({ onPick }) {
+function MapClickHandler({ mapMode, onPickOrigin, onPickDestination }) {
   useMapEvents({
     click(e) {
-      onPick({ lat: e.latlng.lat, lng: e.latlng.lng });
+      const coords = { lat: e.latlng.lat, lng: e.latlng.lng };
+      if (mapMode === "destination") {
+        onPickDestination(coords);
+      } else {
+        onPickOrigin(coords);
+      }
     },
   });
   return null;
 }
 
 /**
- * Renders a small Leaflet map centred on Ireland.
- * Clicking anywhere drops a pin and calls onPick({ lat, lng }).
+ * Fits the map view to show all route lines whenever they change.
  */
-function OriginPickerMap({ pin, onPick }) {
+function MapBoundsFitter({ routeLines }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!routeLines || routeLines.length === 0) return;
+    const allPoints = routeLines.flatMap((r) => r.positions);
+    if (allPoints.length === 0) return;
+    map.fitBounds(allPoints, { padding: [30, 30] });
+  }, [routeLines, map]);
+  return null;
+}
+
+/**
+ * Renders the map with an origin pin picker and, after a search,
+ * coloured polylines for each route option.
+ *
+ * Route colours:
+ *   green  (#22c55e) = recommended public transport
+ *   amber  (#f59e0b) = second best public transport
+ *   red    (#ef4444) = other public transport
+ *   blue   (#3b82f6) = car baseline
+ */
+// Custom red marker icon for the destination pin.
+const redIcon = new L.Icon({
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+  className: "leaflet-marker-red",
+});
+
+function OriginPickerMap({ originPin, destinationPin, mapMode, onPickOrigin, onPickDestination, routeLines }) {
   return (
     <MapContainer
       center={[53.4, -8.0]}
@@ -619,8 +1037,26 @@ function OriginPickerMap({ pin, onPick }) {
         attribution="&copy; OpenStreetMap contributors"
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      <MapClickHandler onPick={onPick} />
-      {pin && <Marker position={[pin.lat, pin.lng]} />}
+      <MapClickHandler mapMode={mapMode} onPickOrigin={onPickOrigin} onPickDestination={onPickDestination} />
+      {originPin && <Marker position={[originPin.lat, originPin.lng]} />}
+      {destinationPin && <Marker position={[destinationPin.lat, destinationPin.lng]} icon={redIcon} />}
+
+      {routeLines && routeLines.map((route, i) => (
+        <Polyline
+          key={i}
+          positions={route.positions}
+          pathOptions={{
+            color: route.color,
+            weight: route.weight || 5,
+            opacity: 0.85,
+            dashArray: route.dashArray || null,
+          }}
+        />
+      ))}
+
+      {routeLines && routeLines.length > 0 && (
+        <MapBoundsFitter routeLines={routeLines} />
+      )}
     </MapContainer>
   );
 }

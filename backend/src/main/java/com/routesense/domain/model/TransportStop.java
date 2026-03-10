@@ -6,22 +6,21 @@ package com.routesense.domain.model;
  */
 
 public class TransportStop {
-    private final long id;
+    private final String id;
     private final String name;
     private final double latitude;
     private final double longitude;
     private final TransportMode mode;
 
-    public TransportStop(long id, String name, double latitude, double longitude, TransportMode mode) {
+    public TransportStop(String id, String name, double latitude, double longitude, TransportMode mode) {
         this.id = id;
         this.name = name;
         this.latitude = latitude;
         this.longitude = longitude;
         this.mode = mode;
     }
-    
 
-    public long getID() { return id; }
+    public String getID() { return id; }
     public String getName() { return name; }
     public double getLatitude() { return latitude; }
     public double getLongitude() { return longitude; }

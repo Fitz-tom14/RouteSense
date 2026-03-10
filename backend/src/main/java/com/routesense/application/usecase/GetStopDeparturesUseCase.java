@@ -6,11 +6,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/**
- * Use case responsible for retrieving departures for a specific stop.
- *
- * This keeps controller logic thin and makes the behaviour testable.
- */
+/// Use case for retrieving departures for a specific stop, used by MapController to get live departure info for map stops.
 
 @Component
 public class GetStopDeparturesUseCase {
@@ -21,7 +17,7 @@ public class GetStopDeparturesUseCase {
         this.mapDataSource = mapDataSource;
     }
 
-    public List<Departure> execute(Long stopId, boolean live) {
+    public List<Departure> execute(String stopId, boolean live) {
         return mapDataSource.getDeparturesForStop(stopId, live);
     }
 }
