@@ -82,7 +82,8 @@ public class JourneyController {
                 leg.getToStopName(),
                 leg.getDepartureTime(),
                 leg.getArrivalTime(),
-                leg.getMode()
+                leg.getMode(),
+                leg.getShapePoints()
         );
     }
 

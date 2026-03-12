@@ -408,10 +408,8 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
   );
 }
 
-/**
- * Fetches a road-following polyline from OSRM for an array of stop objects.
- * Returns an array of [lat, lng] pairs, or null if the request fails.
- */
+// OriginPickerMap component renders a Leaflet map that allows users to pick origin and destination points by clicking on the map.
+// It displays markers for the selected origin and destination pins, and draws polylines for the public transport routes and car baseline if available. The map view automatically fits to show all relevant points and routes when they change.
 async function fetchOsrmGeometry(stops) {
   const valid = (stops || []).filter((s) => s.latitude != null && s.longitude != null);
   if (valid.length < 2) return null;
@@ -439,10 +437,7 @@ async function fetchOsrmGeometry(stops) {
   return null;
 }
 
-/**
- * Returns the transit-only stops for a route, stripping any trailing Walk leg destination.
- * This ensures OSRM only routes along the bus path, not the final walk to destination.
- */
+// Extracts the bus stops from a route, excluding the final stop if the last leg is a walk (since that stop is just a walking destination, not a transit stop).
 function getBusStops(route) {
   const legs = route.legs || [];
   const stops = route.stops || [];
@@ -453,15 +448,43 @@ function getBusStops(route) {
   return stops;
 }
 
-/** Fetch OSRM geometry for all PT routes in parallel (bus portion only). */
-async function fetchAllOsrmGeometries(routes) {
-  return Promise.all((routes || []).map((r) => fetchOsrmGeometry(getBusStops(r))));
+// Determines if a route consists of only train legs (and possibly walk legs), which affects how we fetch geometry for the route since train routes may not follow roads and thus require different handling for accurate mapping.
+function isTrainOnlyRoute(route) {
+  const transitLegs = (route.legs || []).filter((l) => l.mode !== "Walk");
+  return transitLegs.length > 0 && transitLegs.every((l) => l.mode === "Train");
 }
 
-/**
- * Fetches a road-following walk polyline from OSRM (foot profile) between two points.
- * Returns [[lat,lng], ...] or null on failure.
- */
+// For each public transport route, this function fetches road-following geometries from OSRM for the transit legs.
+// It handles different cases for where to get the geometry based on the presence of GTFS shape points and whether the route is train-only, falling back to straight lines between stops if necessary.
+//  The result is an array of geometries corresponding to each route, which can be used for accurate mapping of the routes on the frontend.
+async function fetchAllOsrmGeometries(routes) {
+  return Promise.all((routes || []).map((r) => {
+    const legs = r.legs || [];
+    const transitLegs = legs.filter((l) => l.mode !== "Walk");
+
+    // Use GTFS shape points if all transit legs have them
+    const hasShapes = transitLegs.length > 0 &&
+      transitLegs.every((l) => l.shapePoints && l.shapePoints.length >= 2);
+    if (hasShapes) {
+      const points = [];
+      for (const leg of transitLegs) {
+        points.push(...leg.shapePoints.map((p) => [p[0], p[1]]));
+      }
+      return Promise.resolve(points.length >= 2 ? points : null);
+    }
+
+    if (isTrainOnlyRoute(r)) {
+      // Fallback: straight lines between stops
+      const stops = getBusStops(r);
+      const valid = stops.filter((s) => s.latitude != null && s.longitude != null);
+      return Promise.resolve(valid.length >= 2 ? valid.map((s) => [s.latitude, s.longitude]) : null);
+    }
+
+    return fetchOsrmGeometry(getBusStops(r));
+  }));
+}
+
+// Fetches foot-profile OSRM lines for the walk legs of each route, including the walk from the origin pin to the first bus stop, the walk from the last bus stop to the destination (if the route ends with a walk leg), and the walk from the last bus stop to the destination pin (if a destination pin is set). This allows us to show accurate walking paths on the map for these segments, which may not follow roads and thus require foot routing.
 async function fetchOsrmFootLine(lat1, lng1, lat2, lng2) {
   const coords = `${lng1},${lat1};${lng2},${lat2}`;
   try {
@@ -480,13 +503,9 @@ async function fetchOsrmFootLine(lat1, lng1, lat2, lng2) {
   return null;
 }
 
-/**
- * For each PT route, fetches foot-profile OSRM lines for:
- *   - origin walk:  originPin → first bus stop (if pinLat/pinLng supplied)
- *   - dest walk:    last bus stop → destination stop (if route ends with a Walk leg)
- *   - destPinLine:  last stop → destination pin (if destPinLat/destPinLng supplied)
- * Returns an array of { originLine, destLine, destPinLine } (any may be null).
- */
+// For each route, we fetch the geometries for the walk legs (origin pin → first stop, last stop → destination leg, last stop → destination pin) as applicable.
+// This is done in parallel for all routes to optimize loading times, and the results are stored in an array corresponding to each route.
+// The frontend can then use these geometries to render accurate walking paths on the map for these segments.
 async function fetchAllWalkGeometries(routes, pinLat, pinLng, destPinLat, destPinLng) {
   return Promise.all((routes || []).map(async (route) => {
     const allStops  = route.stops || [];
@@ -532,18 +551,9 @@ async function fetchAllWalkGeometries(routes, pinLat, pinLng, destPinLat, destPi
   }));
 }
 
-/**
- * Converts route options into Leaflet Polyline data with colours.
- *   Recommended PT  → green (solid)
- *   2nd PT          → amber (solid)
- *   Other PT        → red   (solid)
- *   Walk legs       → gray  (dashed)
- *   Car baseline    → blue  (solid)
- *
- * Walk segments (origin pin → first bus stop, last bus stop → destination)
- * are rendered as separate dashed gray lines so the user can see the
- * walking portions clearly, like Google Maps.
- */
+// Builds an array of route lines to be rendered on the map, including the main transit routes (with different colors for recommended vs non-recommended routes), 
+// and the walk legs (origin pin → first stop, last stop → destination leg, last stop → destination pin) with a distinct style.
+// This function consolidates all the geometry information for the routes into a format that can be easily rendered on the map with appropriate styling.
 function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry = null, originPin = null, walkGeometries = [], destinationPin = null) {
   const lines = [];
   // Non-recommended routes get amber → red → purple; never green (green = recommended only).
@@ -802,7 +812,7 @@ function RouteCard({ route, carBaselineCo2Grams, onSelect }) {
   );
 }
 
-/** Returns the slice of allStops between fromName and toName (inclusive). */
+// Returns the slice of allStops between fromName and toName (inclusive). 
 function getStopsForLeg(allStops, fromName, toName) {
   const fromIdx = allStops.findIndex((s) => s.name === fromName);
   if (fromIdx === -1) return [];
@@ -811,12 +821,8 @@ function getStopsForLeg(allStops, fromName, toName) {
   return allStops.slice(fromIdx, toIdx + 1);
 }
 
-/**
- * Groups consecutive legs with the same serviceName into one entry.
- * e.g. 20 individual Bus 405 segments become one group:
- *   { serviceName: "Bus 405", fromStopName: "Gleann Dara", toStopName: "Bohermore Cemetery",
- *     departureTime: "10:55", arrivalTime: "11:25" }
- */
+// Groups consecutive legs that share the same service name into a single leg, extending the toStopName and arrivalTime of the group as needed.
+// This simplifies the route display by consolidating segments that are part of the same transit service, making it easier for users to understand the route structure at a glance.
 function groupLegsByService(legs) {
   if (!legs || legs.length === 0) return [];
   const groups = [];
@@ -908,10 +914,9 @@ function CarBaselineCard({ route }) {
 }
 
 
-/**
- * Shows a compact bar chart comparing all route options by time and CO₂.
- * Appears below the map after a search is completed.
- */
+// The ComparisonPanel component renders a horizontal bar chart comparing the duration and CO₂ emissions of all route options, including the car baseline if available.
+// Each option is represented by a bar whose length corresponds to its duration relative to the longest option, and the color indicates whether it is recommended or not.
+// The panel also includes a legend to explain the colors used for recommended and other options.
 function ComparisonPanel({ publicRoutes, carBaseline }) {
   const allOptions = [
     ...publicRoutes.map((r, i) => ({
@@ -972,11 +977,7 @@ function ComparisonPanel({ publicRoutes, carBaseline }) {
   );
 }
 
-/**
- * Registers a click listener on the Leaflet map.
- * Routes the click to onPickOrigin or onPickDestination depending on mapMode.
- * Must be rendered inside a MapContainer.
- */
+// The MapClickHandler component listens for click events on the map and calls the appropriate callback (onPickOrigin or onPickDestination) with the clicked coordinates, depending on the current map mode (origin or destination).
 function MapClickHandler({ mapMode, onPickOrigin, onPickDestination }) {
   useMapEvents({
     click(e) {
@@ -991,9 +992,7 @@ function MapClickHandler({ mapMode, onPickOrigin, onPickDestination }) {
   return null;
 }
 
-/**
- * Fits the map view to show all route lines whenever they change.
- */
+// The MapBoundsFitter component adjusts the map view to fit all the route lines whenever they change, ensuring that the user can see the entire route on the map without needing to manually zoom or pan.
 function MapBoundsFitter({ routeLines }) {
   const map = useMap();
   useEffect(() => {
@@ -1005,16 +1004,6 @@ function MapBoundsFitter({ routeLines }) {
   return null;
 }
 
-/**
- * Renders the map with an origin pin picker and, after a search,
- * coloured polylines for each route option.
- *
- * Route colours:
- *   green  (#22c55e) = recommended public transport
- *   amber  (#f59e0b) = second best public transport
- *   red    (#ef4444) = other public transport
- *   blue   (#3b82f6) = car baseline
- */
 // Custom red marker icon for the destination pin.
 const redIcon = new L.Icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",

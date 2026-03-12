@@ -5,7 +5,8 @@ import HomePage from "./pages/HomePage";
 import MapPage from "./pages/MapPage";
 import LoginPage from "./pages/LoginPage";
 import RoutesPage from "./pages/RoutesPage";
-import SettingsPage from "./pages/SettingsPage";
+import HistoryPage from "./pages/HistoryPage";
+import { saveJourney } from "./services/history";
 
 // Auth helper
 import { getStoredAuth } from "./services/auth";
@@ -28,6 +29,7 @@ function App() {
   function handleSelectJourney(route, carBaselineCo2Grams) {
     setSelectedJourney(route);
     setSelectedJourneyCarCo2(carBaselineCo2Grams);
+    saveJourney(route, carBaselineCo2Grams);
     setActivePage("Home");
   }
 
@@ -74,9 +76,9 @@ function App() {
     );
   }
 
-  if (activePage === "Settings") {
+  if (activePage === "History") {
     return (
-      <SettingsPage
+      <HistoryPage
         activePage={activePage}
         onNavigate={setActivePage}
         onLogout={handleLogout}

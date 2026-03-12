@@ -1,9 +1,10 @@
-/**
- * Bottom navigation bar.
- * Uses activePage to highlight the current page and onNavigate to switch pages.
- */
+// src/components/BottomNav.jsx
+// A simple bottom navigation component for the RouteSense app
+
+import React from "react";
+import "./BottomNav.css"; // Import styles for the bottom navigation
 function BottomNav({ activePage, onNavigate }) {
-  const navItems = ["Home", "Map", "Routes", "Settings"];
+  const navItems = ["Home", "Map", "Routes", "History"];
 
   return (
     <nav className="bottom-nav">

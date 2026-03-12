@@ -44,4 +44,9 @@ public class InMemoryStopGraphRepository implements StopGraphRepository {
     public Map<String, String> getRouteShortNames() {
         return gtfsGraphLoader.getRouteShortNames();
     }
+
+    @Override
+    public Map<String, List<double[]>> getRouteShapes() {
+        return gtfsGraphLoader.getRouteShapes();
+    }
 }

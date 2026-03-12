@@ -1,0 +1,285 @@
+/* History Page - dashboard layout matching the rest of the app */
+
+.history-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #f5f5f5;
+  padding-bottom: 70px;
+}
+
+/* ── Period Toggle ─────────────────────────────────────────── */
+
+.period-toggle {
+  display: flex;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem 0;
+}
+
+.period-btn {
+  flex: 1;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.period-btn.active {
+  background: #4a90e2;
+  color: #fff;
+  border-color: #4a90e2;
+}
+
+/* ── KPI Summary Row ───────────────────────────────────────── */
+
+.history-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+}
+
+.history-kpi {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.25rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.history-kpi .kpi-label {
+  font-size: 0.8rem;
+  color: #888;
+  font-weight: 500;
+  margin-bottom: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.history-kpi .kpi-val {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #1a1a1a;
+  line-height: 1;
+}
+
+.history-kpi .kpi-unit {
+  font-size: 0.8rem;
+  color: #888;
+  font-weight: 500;
+  margin-top: 0.25rem;
+}
+
+.kpi-val.green { color: #16a34a; }
+.kpi-val.blue  { color: #4a90e2; }
+
+/* ── Section Cards ─────────────────────────────────────────── */
+
+.history-section {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin: 0 1.5rem 1rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.section-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 1rem;
+}
+
+/* ── Bar Chart (journeys per day / CO₂ saved per day) ─────── */
+
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 120px;
+}
+
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+}
+
+.bar-track {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  background: #f5f5f5;
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+}
+
+.bar-fill {
+  width: 100%;
+  background: #4a90e2;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.3s ease;
+  min-height: 2px;
+}
+
+.bar-fill.green {
+  background: #22c55e;
+}
+
+.bar-label {
+  font-size: 0.65rem;
+  color: #999;
+  margin-top: 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Month view: hide every other label to avoid crowding */
+.bar-chart.month .bar-col:nth-child(even) .bar-label {
+  visibility: hidden;
+}
+
+/* ── Mode Breakdown ────────────────────────────────────────── */
+
+.mode-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.mode-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.mode-row-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #555;
+  width: 90px;
+  flex-shrink: 0;
+}
+
+.mode-bar-track {
+  flex: 1;
+  height: 10px;
+  background: #f0f0f0;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.mode-bar-fill {
+  height: 100%;
+  background: #4a90e2;
+  border-radius: 5px;
+  transition: width 0.3s ease;
+  min-width: 4px;
+}
+
+.mode-row-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #888;
+  width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ── Recent Journeys List ──────────────────────────────────── */
+
+.journey-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.journey-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #eee;
+}
+
+.journey-item-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.journey-item-mode {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.journey-item-date {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.journey-item-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.journey-item-duration {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #4a90e2;
+}
+
+.journey-item-co2 {
+  font-size: 0.75rem;
+  color: #16a34a;
+}
+
+/* ── Empty State ───────────────────────────────────────────── */
+
+.history-empty {
+  text-align: center;
+  padding: 3rem 1.5rem;
+  color: #999;
+}
+
+.history-empty p {
+  font-size: 0.95rem;
+  margin-top: 0.5rem;
+}
+
+/* ── Logout ────────────────────────────────────────────────── */
+
+.logout-container {
+  padding: 0.5rem 1.5rem 1rem;
+  display: flex;
+  justify-content: center;
+}
+
+.logout-btn {
+  padding: 0.6rem 2rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #888;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.logout-btn:hover {
+  color: #e53e3e;
+  border-color: #e53e3e;
+}

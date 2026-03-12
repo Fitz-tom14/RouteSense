@@ -87,22 +87,56 @@ public class SearchJourneyUseCase {
         Map<String, List<StopEdge>>            adjacencyList  = stopGraphRepository.getAdjacencyList();
         Map<String, List<ScheduledConnection>> schedule       = stopGraphRepository.getSchedule();
         Map<String, String>                    routeShortNames = stopGraphRepository.getRouteShortNames();
+        Map<String, List<double[]>>            routeShapes    = stopGraphRepository.getRouteShapes();
 
-        // --- Resolve destination ---
-        // If destination coordinates are provided instead of a stop ID, find the nearest stop.
-        // We do NOT filter by outgoing edges here because the destination is where we arrive,
-        // not where we depart — terminal stops have no outgoing edges but are valid destinations.
+        // --- Resolve destination candidates ---
+        // Build a list of destination stop IDs to try. When coordinates are given we try:
+        //   1. The nearest scheduled stop within 600 m (a nearby bus stop the user might mean)
+        //   2. The nearest TRAIN station within 20 km (covers rural Ireland where no bus stop
+        //      exists near the pin but a train station is within reasonable distance)
+        // Both candidates are tried so a user near a bus stop still gets bus results AND
+        // a user far from any bus stop still gets a train route to the nearest station.
+        List<String> destCandidates = new ArrayList<>();
         if (destinationLat != null && destinationLon != null && (destinationStopId == null || destinationStopId.isBlank())) {
-            List<StopDistance> nearbyDest = findNearbyStops(destinationLat, destinationLon, 0.6, stops);
-            if (nearbyDest.isEmpty()) {
-                return new JourneySearchResult(List.of(), 0.0);
+            // Nearest scheduled bus stop within 600 m
+            List<StopDistance> nearbyDest = findNearbyStops(destinationLat, destinationLon, 0.6, stops).stream()
+                    .filter(sd -> !schedule.getOrDefault(sd.stopId(), List.of()).isEmpty())
+                    .collect(Collectors.toList());
+            if (!nearbyDest.isEmpty()) {
+                destCandidates.add(nearbyDest.get(0).stopId());
             }
-            destinationStopId = nearbyDest.get(0).stopId();
+
+            // Always also try the nearest train station within 20 km
+            StopDistance nearestTrainDest = findNearestTrainStop(destinationLat, destinationLon, stops, schedule, 20.0);
+            if (nearestTrainDest != null && !destCandidates.contains(nearestTrainDest.stopId())) {
+                destCandidates.add(nearestTrainDest.stopId());
+            }
+
+            // If no stop was found within a walkable distance (bus within 600 m or train within 2 km),
+            // also add the nearest scheduled stop within 20 km. This handles pins in rural areas where
+            // a distant train station was already added but the nearest bus stop is closer and more useful.
+            boolean hasWalkableDest = !nearbyDest.isEmpty() ||
+                    (nearestTrainDest != null && nearestTrainDest.distanceKm() <= 2.0);
+            if (!hasWalkableDest) {
+                List<StopDistance> farDest = findNearbyStops(destinationLat, destinationLon, 20.0, stops).stream()
+                        .filter(sd -> !schedule.getOrDefault(sd.stopId(), List.of()).isEmpty())
+                        .collect(Collectors.toList());
+                if (!farDest.isEmpty() && !destCandidates.contains(farDest.get(0).stopId())) {
+                    destCandidates.add(farDest.get(0).stopId());
+                }
+            }
+        } else {
+            if (destinationStopId != null && !destinationStopId.isBlank()) {
+                destCandidates.add(destinationStopId);
+            }
         }
 
-        if (destinationStopId == null || destinationStopId.isBlank()) {
+        if (destCandidates.isEmpty()) {
             return new JourneySearchResult(List.of(), 0.0);
         }
+        // Primary destination for guard checks and car baseline
+        destinationStopId = destCandidates.get(0);
+        LOGGER.info("DEBUG dest candidates: {}, origin coords: {},{}", destCandidates, destinationLat, destinationLon);
 
         // When "arrive by" is set, start searching 3 hours before the target so we find real options.
         // Otherwise fall back to the explicit departure time or the current time.
@@ -127,7 +161,35 @@ public class SearchJourneyUseCase {
             // near-identical options when many stops of the same bus line are nearby (e.g. Bus 405
             // passes through four stops all within 400 m of the pin).
             List<StopDistance> nearby = findNearbyConnectedStops(originLat, originLon, 0.6, stops, adjacencyList);
-            originCandidates = nearby.size() > 3 ? nearby.subList(0, 3) : nearby;
+            List<StopDistance> candidates = new ArrayList<>(nearby.size() > 3 ? nearby.subList(0, 3) : nearby);
+
+            // Also look for the nearest train station within 5 km — train stations are typically
+            // further from residential pins but still reachable on foot.  Only add if not already
+            // in the candidate list (avoids duplicate when the user pins right next to a station).
+            StopDistance nearestTrain = findNearestTrainStop(originLat, originLon, stops, schedule, 20.0);
+            if (nearestTrain != null) {
+                boolean alreadyPresent = candidates.stream()
+                        .anyMatch(c -> c.stopId().equals(nearestTrain.stopId()));
+                if (!alreadyPresent) {
+                    candidates.add(nearestTrain);
+                }
+            }
+
+            // If no stop was found within a walkable distance (bus within 600 m or train within 2 km),
+            // also add the nearest connected stop within 20 km as a fallback for rural origin pins.
+            boolean hasWalkableOrigin = !nearby.isEmpty() ||
+                    (nearestTrain != null && nearestTrain.distanceKm() <= 2.0);
+            if (!hasWalkableOrigin) {
+                List<StopDistance> farOrigin = findNearbyConnectedStops(originLat, originLon, 20.0, stops, adjacencyList);
+                if (!farOrigin.isEmpty()) {
+                    boolean alreadyPresent = candidates.stream().anyMatch(c -> c.stopId().equals(farOrigin.get(0).stopId()));
+                    if (!alreadyPresent) {
+                        candidates.add(farOrigin.get(0));
+                    }
+                }
+            }
+
+            originCandidates = candidates;
             if (originCandidates.isEmpty()) {
                 return new JourneySearchResult(List.of(), 0.0);
             }
@@ -143,7 +205,9 @@ public class SearchJourneyUseCase {
         String effectiveOriginStopId  = primaryOrigin.stopId();
         int    extraOriginWalkSeconds = walkingSeconds(primaryOrigin.distanceKm());
 
+        LOGGER.info("DEBUG origin candidates: {}, effective origin: {}", originCandidates.stream().map(StopDistance::stopId).collect(Collectors.toList()), effectiveOriginStopId);
         if (!stops.containsKey(effectiveOriginStopId) || !stops.containsKey(destinationStopId)) {
+            LOGGER.info("DEBUG stop not found — effectiveOrigin in stops: {}, dest in stops: {}", stops.containsKey(effectiveOriginStopId), stops.containsKey(destinationStopId));
             return new JourneySearchResult(List.of(), 0.0);
         }
 
@@ -152,9 +216,11 @@ public class SearchJourneyUseCase {
         Set<String>         seenSignatures = new HashSet<>();
 
         if (!schedule.isEmpty()) {
-            String scheduleDest = resolveScheduleStop(destinationStopId, schedule, stops, adjacencyList);
+            // Try each destination candidate in order; collect routes from whichever produce results.
+            for (String destId : destCandidates) {
+                String scheduleDest = resolveScheduleStop(destId, schedule, stops, adjacencyList);
+                if (scheduleDest == null) continue;
 
-            if (scheduleDest != null) {
                 // Try every nearby origin stop so we don't miss buses on the opposite side of the road.
                 for (StopDistance candidate : originCandidates) {
                     int walkSecs     = walkingSeconds(candidate.distanceKm());
@@ -171,9 +237,8 @@ public class SearchJourneyUseCase {
                     // 3rd option: next bus 30 minutes later (catches a different service)
                     ScheduledPath laterOption = scheduleAwareDijkstra(
                             scheduleOrigin, scheduleDest, schedule, stops, boardingTime + 1800, FASTEST_TRANSFER_PENALTY_SECONDS);
-
                     // If no buses found AND it is late night (after 21:00), retry from next morning.
-                    boolean isLateNight = boardingTime > 21 * 3600; // checking next day
+                    boolean isLateNight = boardingTime > 21 * 3600;
                     if (fastest == null && isLateNight) {
                         fastest = scheduleAwareDijkstra(scheduleOrigin, scheduleDest, schedule, stops, 0, FASTEST_TRANSFER_PENALTY_SECONDS);
                     }
@@ -186,9 +251,9 @@ public class SearchJourneyUseCase {
                                 scheduleOrigin, scheduleDest, schedule, stops, 3600, FASTEST_TRANSFER_PENALTY_SECONDS);
                     }
 
-                    addScheduledOption(optionsToScore, seenSignatures, fastest,         stops, walkSecs, destinationStopId);
-                    addScheduledOption(optionsToScore, seenSignatures, fewestTransfers,  stops, walkSecs, destinationStopId);
-                    addScheduledOption(optionsToScore, seenSignatures, laterOption,      stops, walkSecs, destinationStopId);
+                    addScheduledOption(optionsToScore, seenSignatures, fastest,        stops, walkSecs, destId, routeShapes);
+                    addScheduledOption(optionsToScore, seenSignatures, fewestTransfers, stops, walkSecs, destId, routeShapes);
+                    addScheduledOption(optionsToScore, seenSignatures, laterOption,     stops, walkSecs, destId, routeShapes);
                 }
             }
         }
@@ -365,7 +430,7 @@ public class SearchJourneyUseCase {
         return reconstructScheduledPath(destinationState, startTimeSeconds);
     }
 
-    /** Walks back through the parent-pointer chain to build the list of legs. */
+    //Walks back through the parent-pointer chain to build the list of legs
     private ScheduledPath reconstructScheduledPath(TripState destination, int startTime) {
         LinkedList<PathLeg> legs = new LinkedList<>();
         TripState current = destination;
@@ -375,6 +440,7 @@ public class SearchJourneyUseCase {
             legs.addFirst(new PathLeg(
                     current.parent().stopId(),
                     current.stopId(),
+                    conn.getRouteId(),
                     conn.getRouteShortName(),
                     conn.getMode(),
                     conn.getDepartureTimeSeconds(),
@@ -391,24 +457,14 @@ public class SearchJourneyUseCase {
         return new ScheduledPath(new ArrayList<>(legs), Math.max(0, totalDuration), destination.transfers());
     }
 
-    /** Converts a ScheduledPath into a JourneyOption and adds it to the list (deduped by stop sequence). */
     private void addScheduledOption(
-            List<JourneyOption> target,
-            Set<String>         seenSignatures,
-            ScheduledPath       path,
-            Map<String, Stop>   stops,
-            int                 extraOriginWalkSeconds
-    ) {
-        addScheduledOption(target, seenSignatures, path, stops, extraOriginWalkSeconds, null);
-    }
-
-    private void addScheduledOption(
-            List<JourneyOption> target,
-            Set<String>         seenSignatures,
-            ScheduledPath       path,
-            Map<String, Stop>   stops,
-            int                 extraOriginWalkSeconds,
-            String              requestedDestStopId
+            List<JourneyOption>         target,
+            Set<String>                 seenSignatures,
+            ScheduledPath               path,
+            Map<String, Stop>           stops,
+            int                         extraOriginWalkSeconds,
+            String                      requestedDestStopId,
+            Map<String, List<double[]>> routeShapes
     ) {
         if (path == null || path.legs().isEmpty()) {
             return;
@@ -463,16 +519,31 @@ public class SearchJourneyUseCase {
             String fromName   = from != null ? from.getName() : leg.fromStopId();
             String toName     = to   != null ? to.getName()   : leg.toStopId();
             String modeLabel  = formatMode(leg.mode());
-            String service    = (leg.routeShortName() != null && !leg.routeShortName().isBlank())
-                    ? modeLabel + " " + leg.routeShortName()
-                    : modeLabel;
+            // Trains have no meaningful route number in Irish GTFS, so use the departure time
+            // as the service identifier (e.g. "Train dep. 14:30"). This also ensures that
+            // two different trains on the same journey are kept as separate legs.
+            String service;
+            if (leg.mode() == TransportMode.TRAIN) {
+                service = "Train dep. " + formatTime(leg.departureSeconds());
+            } else if (leg.routeShortName() != null && !leg.routeShortName().isBlank()) {
+                service = modeLabel + " " + leg.routeShortName();
+            } else {
+                service = modeLabel;
+            }
+            List<double[]> shapePoints = null;
+            if (from != null && to != null) {
+                shapePoints = extractShapeSegment(leg.routeId(), routeShapes,
+                        from.getLatitude(), from.getLongitude(),
+                        to.getLatitude(), to.getLongitude());
+            }
             journeyLegs.add(new JourneyLeg(
                     service,
                     fromName,
                     toName,
                     formatTime(leg.departureSeconds()),
                     formatTime(leg.arrivalSeconds()),
-                    modeLabel
+                    modeLabel,
+                    shapePoints
             ));
         }
 
@@ -497,7 +568,8 @@ public class SearchJourneyUseCase {
                                 destStop.getName(),
                                 formatTime(busArrival),
                                 formatTime(busArrival + finalWalkSeconds),
-                                "Walk"
+                                "Walk",
+                                null
                         ));
                         stopList.add(destStop);
                     }
@@ -523,14 +595,14 @@ public class SearchJourneyUseCase {
         ));
     }
 
-    /** Formats seconds-since-midnight as "HH:mm". Handles times past midnight. */
+    // Formats seconds-since-midnight as "HH:mm". Handles times past midnight.
     private String formatTime(int totalSeconds) {
         int h = (totalSeconds % 86400) / 3600;
         int m = (totalSeconds % 3600) / 60;
         return String.format("%02d:%02d", h, m);
     }
 
-    /** Sums CO2 emissions across all legs using haversine distance and emissions factor. */
+    // Sums CO2 emissions across all legs using haversine distance and emissions factor. 
     private double calculateCo2ForLegs(List<PathLeg> legs, Map<String, Stop> stops) {
         double total = 0.0;
         for (PathLeg leg : legs) {
@@ -545,10 +617,8 @@ public class SearchJourneyUseCase {
         return total;
     }
 
-    /**
-     * Builds a mode summary string like "Walk → Bus 411 → Bus 409".
-     * Consecutive legs on the same route are merged into one label.
-     */
+    // Builds a user-friendly mode summary like "Walk → Bus 405 → Train" by looking at the sequence of legs and their modes.
+    // Consecutive legs on the same route are collapsed (e.g. "Bus 405 → Bus 405" becomes just "Bus 405").  If the user has to walk at the start to reach the first stop, include that in the summary as well.
     private String buildModeSummaryFromLegs(List<PathLeg> legs, boolean walkAtStart) {
         List<String> parts = new ArrayList<>();
         if (walkAtStart) {
@@ -567,14 +637,10 @@ public class SearchJourneyUseCase {
         return parts.isEmpty() ? "Public transport" : String.join(" → ", parts);
     }
 
-    // -------------------------------------------------------------------------
-    // Car baseline
-    // -------------------------------------------------------------------------
-
-    /**
-     * Tries OpenRouteService for a real road distance and duration.
-     * Falls back to haversine x 1.25 if ORS is unavailable or the key is not set.
-     */
+   // Builds a car baseline option using OpenRouteService for distance and duration, falling back to haversine distance if the API call fails.
+   // The car baseline is used to provide context to the user — if the recommended bus route takes 45 minutes but the car baseline is 15 minutes,
+   // the user understands that the bus is slower but may still prefer it for cost or environmental reasons.
+   // If the car baseline is close to or worse than the bus options, that strengthens the recommendation for public transport.
     private CarBaselineResult buildCarBaseline(double originLat, double originLon, Stop destination) {
         double distanceKm;
         int    durationSeconds;
@@ -616,11 +682,12 @@ public class SearchJourneyUseCase {
 
     private record CarBaselineResult(JourneyOption option, List<List<Double>> geometry) {}
 
-    // -------------------------------------------------------------------------
-    // Fallback: time-unaware Dijkstra (used when schedule is empty)
-    // -------------------------------------------------------------------------
 
-    /** Runs the original three-variant Dijkstra search when no schedule data is loaded. */
+    // Resolves the "effective" origin and destination stops for the fallback Dijkstra search.
+    // If the user dropped a pin, this picks the nearest stop with schedule data as the effective stop for routing and scoring purposes.
+    // If the user typed a stop ID directly, that is used as the effective stop without modification.
+
+    // Runs the original three-variant Dijkstra search when no schedule data is loaded.
     private void runFallbackDijkstra(
             String                     effectiveOriginStopId,
             String                     destinationStopId,
@@ -653,9 +720,8 @@ public class SearchJourneyUseCase {
                 effectiveOriginStopId, destinationStopId, totalOriginAccess, anchors.destinationAccessSeconds());
     }
 
-    // -------------------------------------------------------------------------
-    // Scoring and recommendation
-    // -------------------------------------------------------------------------
+
+    //scoring recommendation logic: assign a score to each option based on normalized time, transfers, and CO2, then mark the best one as recommended with a reason.
 
     private List<JourneyOption> scoreAndRecommend(List<JourneyOption> options) {
         if (options.isEmpty()) {
@@ -724,10 +790,8 @@ public class SearchJourneyUseCase {
         return "Best balance of time + transfers + CO2";
     }
 
-    // -------------------------------------------------------------------------
-    // Fallback Dijkstra helpers (unchanged from original algorithm)
-    // -------------------------------------------------------------------------
-
+    // Normalizes a value to a 0.0-1.0 range based on the provided min and max, where 0.0 is best and 1.0 is worst.
+    // If all values are the same (min == max), returns 0.0 to avoid division by zero and treat them as equally good.
     private void addPublicTransportOption(
             List<JourneyOption>          target,
             Set<String>                  seenSignatures,
@@ -797,11 +861,8 @@ public class SearchJourneyUseCase {
         ));
     }
 
-    /**
-     * Groups consecutive hops on the same route into a single leg.
-     * Each leg shows the service name (e.g. "Bus 405"), from/to stop names, and no times
-     * (times are not available in the fallback time-unaware Dijkstra).
-     */
+   // Builds the list of JourneyLegs for display by walking through the path of stop IDs and looking up the corresponding routes and modes from the adjacency list.
+   // Consecutive hops on the same route are collapsed into a single leg.
     private List<JourneyLeg> buildLegsFromPath(
             List<String>                stopIds,
             Map<String, Stop>           stopsById,
@@ -840,7 +901,8 @@ public class SearchJourneyUseCase {
                     from != null ? from.getName() : fromId,
                     to   != null ? to.getName()   : toId,
                     "", "",
-                    modeLabel
+                    modeLabel,
+                    null
             ));
             i = j;
         }
@@ -922,12 +984,10 @@ public class SearchJourneyUseCase {
         return ids;
     }
 
-    /**
-     * Returns the stop ID to use for schedule-aware routing.
-     * If the requested stop has schedule entries, returns it directly.
-     * Otherwise, finds the nearest stop (within 500m) that does have schedule entries.
-     * This handles cases like Irish Rail parent stations whose child stops carry the schedule.
-     */
+   
+    // Resolves the effective stop ID to use for routing when the user input does not directly correspond to a stop with schedule data.
+    // If the user typed a stop ID that has schedule data, that is used directly.  
+    // If the user typed a stop ID that has no schedule data, find the nearest stop with schedule data and use that instead (e.g. "Saint Francis Street" → "Galway Ceannt").  If the user dropped a pin, find the nearest stop with schedule data to that location and use it as the effective stop for routing and scoring purposes.
     private String resolveScheduleStop(
             String stopId,
             Map<String, List<ScheduledConnection>> schedule,
@@ -955,11 +1015,7 @@ public class SearchJourneyUseCase {
         return bestId != null ? bestId : stopId; // fall back to original if nothing nearby
     }
 
-    private StopDistance findNearestConnectedStop(
-            double lat, double lon,
-            Map<String, Stop> stops,
-            Map<String, List<StopEdge>> adjacencyList
-    ) {
+    private StopDistance findNearestConnectedStop(double lat, double lon, Map<String, Stop> stops, Map<String, List<StopEdge>> adjacencyList) {
         StopDistance nearest = null;
         for (Map.Entry<String, Stop> entry : stops.entrySet()) {
             String stopId = entry.getKey();
@@ -973,7 +1029,65 @@ public class SearchJourneyUseCase {
         return nearest;
     }
 
-    /** Returns all connected stops within maxKm of (lat,lon), sorted nearest-first. */
+    // Similar to findNearestConnectedStop but only considers stops that have train service in the schedule, since those are more likely to be useful for intercity journeys where the user dropped a pin near a station.
+    private StopDistance findNearestTrainStop(
+            double lat, double lon,
+            Map<String, Stop> stops,
+            Map<String, List<ScheduledConnection>> schedule,
+            double maxKm
+    ) {
+        StopDistance nearest = null;
+        for (Map.Entry<String, List<ScheduledConnection>> entry : schedule.entrySet()) {
+            boolean hasTrain = entry.getValue().stream()
+                    .anyMatch(c -> c.getMode() == TransportMode.TRAIN);
+            if (!hasTrain) continue;
+
+            Stop stop = stops.get(entry.getKey());
+            if (stop == null) continue;
+
+            double distKm = emissionsCalculator.haversineDistanceKm(lat, lon, stop.getLatitude(), stop.getLongitude());
+            if (distKm <= maxKm && (nearest == null || distKm < nearest.distanceKm())) {
+                nearest = new StopDistance(entry.getKey(), distKm);
+            }
+        }
+        return nearest;
+    }
+
+    // Extracts the segment of the route shape that corresponds to the leg between (fromLat, fromLon) and (toLat, toLon) by finding the nearest points on the shape to the start and end locations.
+    // This is used for displaying a map polyline of each leg of the journey.
+    private List<double[]> extractShapeSegment(
+            String routeId,
+            Map<String, List<double[]>> routeShapes,
+            double fromLat, double fromLon,
+            double toLat,   double toLon
+    ) {
+        if (routeId == null) return null;
+        List<double[]> shape = routeShapes.get(routeId);
+        if (shape == null || shape.size() < 2) return null;
+
+        int fromIdx = nearestShapeIndex(shape, fromLat, fromLon);
+        int toIdx   = nearestShapeIndex(shape, toLat, toLon);
+
+        int lo = Math.min(fromIdx, toIdx);
+        int hi = Math.max(fromIdx, toIdx);
+        return shape.subList(lo, hi + 1);
+    }
+
+    private int nearestShapeIndex(List<double[]> shape, double lat, double lon) {
+        int best = 0;
+        double bestDist = Double.MAX_VALUE;
+        for (int i = 0; i < shape.size(); i++) {
+            double[] pt = shape.get(i);
+            double d = emissionsCalculator.haversineDistanceKm(lat, lon, pt[0], pt[1]);
+            if (d < bestDist) {
+                bestDist = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    // Returns all connected stops within maxKm of (lat,lon), sorted nearest-first.
     private List<StopDistance> findNearbyStops(
             double lat, double lon, double maxKm,
             Map<String, Stop> stops
@@ -1051,7 +1165,6 @@ public class SearchJourneyUseCase {
             case WALK        -> "Walk";
             case BUS         -> "Bus";
             case TRAIN       -> "Train";
-            case TRAM, LUAS  -> "Tram";
             case BIKE        -> "Bike";
             case CAR         -> "Car";
         };
@@ -1149,15 +1262,13 @@ public class SearchJourneyUseCase {
         return stopId + ":" + (routeId != null ? routeId : "");
     }
 
-    // -------------------------------------------------------------------------
-    // Inner types
-    // -------------------------------------------------------------------------
+    // Functional interface for providing edge weights to the Dijkstra search, allowing us to easily switch between different optimization criteria (fastest, fewest transfers, balanced).
 
     private interface EdgeWeightFunction {
         int weight(StopEdge edge);
     }
 
-    /** State node for the schedule-aware Dijkstra priority queue. */
+    // State node for the schedule-aware Dijkstra priority queue. 
     private record TripState(
             String              stopId,
             String              routeId,
@@ -1168,17 +1279,18 @@ public class SearchJourneyUseCase {
             ScheduledConnection connection
     ) {}
 
-    /** One transit leg: board at fromStopId on a named route, alight at toStopId. */
+    // One transit leg: board at fromStopId on a named route, alight at toStopId. 
     private record PathLeg(
             String        fromStopId,
             String        toStopId,
+            String        routeId,
             String        routeShortName,
             TransportMode mode,
             int           departureSeconds,
             int           arrivalSeconds
     ) {}
 
-    /** A complete journey found by scheduleAwareDijkstra. */
+    // A complete journey found by scheduleAwareDijkstra.
     private record ScheduledPath(
             List<PathLeg> legs,
             int           totalDurationSeconds,

@@ -9,6 +9,4 @@ public enum TransportMode {
     BUS,
     BIKE,
     TRAIN,
-    TRAM,
-    LUAS,
 }

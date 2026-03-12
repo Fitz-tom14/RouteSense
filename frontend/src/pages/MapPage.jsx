@@ -9,7 +9,6 @@ import "../styles/map.css";
 const MODE_COLOR = {
   BUS:   "#3b82f6",
   TRAIN: "#f59e0b",
-  TRAM:  "#8b5cf6",
 };
 
 // StopMarker component represents a single stop on the map, showing a popup with upcoming departures when clicked.

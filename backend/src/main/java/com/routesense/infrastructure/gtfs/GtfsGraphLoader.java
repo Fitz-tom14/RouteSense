@@ -20,9 +20,12 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /// Loads GTFS data from the classpath and builds in-memory graph structures for stops, edges, and schedules.
 /// This is used by InMemoryStopGraphRepository to serve data to the application, and by InMemoryMapDataSource to serve stop and departure data to the map.
@@ -36,6 +39,7 @@ public class GtfsGraphLoader {
     private Map<String, List<StopEdge>> adjacencyList = Map.of();
     private Map<String, List<ScheduledConnection>> scheduleByStop = Map.of();
     private Map<String, String> routeShortNames = Map.of(); // routeId → shortName (e.g. "405", "DART")
+    private Map<String, List<double[]>> routeShapes = Map.of(); // routeId → ordered [lat,lon] shape points (train routes only)
 
     @PostConstruct
     public void loadGraph() {
@@ -69,8 +73,10 @@ public class GtfsGraphLoader {
         }
         this.routeShortNames = Collections.unmodifiableMap(shortNameMap);
 
-        LOGGER.info("GTFS loaded: {} stops, {} stops with edges, {} stops with schedule data, {} routes with short names",
-                parsedStops.size(), immutableAdjacency.size(), immutableSchedule.size(), shortNameMap.size());
+        this.routeShapes = Collections.unmodifiableMap(loadRouteShapes());
+
+        LOGGER.info("GTFS loaded: {} stops, {} stops with edges, {} stops with schedule data, {} routes with short names, {} train route shapes",
+                parsedStops.size(), immutableAdjacency.size(), immutableSchedule.size(), shortNameMap.size(), this.routeShapes.size());
     }
 
     public Map<String, Stop> getStops() {
@@ -89,9 +95,13 @@ public class GtfsGraphLoader {
         return routeShortNames;
     }
 
-    // -------------------------------------------------------------------------
+    public Map<String, List<double[]>> getRouteShapes() {
+        return routeShapes;
+    }
+
+   
     // Stop loading
-    // -------------------------------------------------------------------------
+    
 
     private Map<String, Stop> loadStops() {
         Map<String, Stop> result = new HashMap<>();
@@ -131,9 +141,9 @@ public class GtfsGraphLoader {
         return result;
     }
 
-    // -------------------------------------------------------------------------
+    
     // Edge + schedule loading
-    // -------------------------------------------------------------------------
+    
 
     // Groups both output maps into one return value so loadEdges() can return both at once.
     private record LoadedEdgeData(
@@ -226,11 +236,8 @@ public class GtfsGraphLoader {
         return new LoadedEdgeData(adjacency, scheduleByStop);
     }
 
-    /**
-     * For a single trip, walks the stops in sequence order and:
-     * 1. Aggregates average travel times per stop-pair per route (for the adjacency list).
-     * 2. Creates a ScheduledConnection for each consecutive stop pair (for the schedule map).
-     */
+    // Processes all stop times for a single trip, updating the aggregated edge stats and schedule entries.
+    // This is where we build the edges and schedules for each trip, and aggregate them by stop-pair + route.
     private void processTripRows(
             List<StopTimeRow> tripRows,
             TripInfo tripInfo,
@@ -274,9 +281,9 @@ public class GtfsGraphLoader {
         }
     }
 
-    // -------------------------------------------------------------------------
+    
     // Route and trip info loading
-    // -------------------------------------------------------------------------
+    
 
     // Holds the mode and short name for a GTFS route (e.g. mode=BUS, shortName="411")
     private record RouteInfo(TransportMode mode, String shortName) {}
@@ -351,16 +358,117 @@ public class GtfsGraphLoader {
 
     private TransportMode mapGtfsRouteType(int routeType) {
         return switch (routeType) {
-            case 0, 900, 901, 902, 903, 904, 905, 906 -> TransportMode.TRAM;
+            case 0, 900, 901, 902, 903, 904, 905, 906 -> TransportMode.BUS; // tram routes treated as bus
             case 1, 2, 100, 109 -> TransportMode.TRAIN;
             case 3, 700, 701, 702, 703, 704, 705, 706 -> TransportMode.BUS;
             default -> TransportMode.BUS;
         };
     }
 
-    // -------------------------------------------------------------------------
+    
+    // Shape loading (train routes only — shapes.txt is 90 MB so we filter aggressively)
+    
+
+   
+    // Loads route shapes for train routes only, since shapes.txt can be very large and most modes don't have useful shapes.
+    // The process is:
+    // 1. Load route info to find all train route IDs.
+    // 2. Scan trips.txt to find one representative shape_id for each train route.
+    // 3. Load shapes.txt and keep only the points for the needed shape IDs.
+    private Map<String, List<double[]>> loadRouteShapes() {
+        // Step 1: collect train route IDs
+        Map<String, RouteInfo> routeInfoByRouteId = loadRouteInfoByRouteId();
+        Set<String> trainRouteIds = new HashSet<>();
+        for (Map.Entry<String, RouteInfo> e : routeInfoByRouteId.entrySet()) {
+            if (e.getValue().mode() == TransportMode.TRAIN) {
+                trainRouteIds.add(e.getKey());
+            }
+        }
+        if (trainRouteIds.isEmpty()) return Map.of();
+
+        // Step 2: map train routeId → one representative shape_id from trips.txt
+        Map<String, String> routeToShapeId = new HashMap<>();
+        try (BufferedReader reader = openGtfsReader("trips.txt")) {
+            String header = reader.readLine();
+            if (header == null) return Map.of();
+            Map<String, Integer> col = buildColumnIndex(header);
+            Integer routeIdIdx = col.get("route_id");
+            Integer shapeIdIdx = col.get("shape_id");
+            if (routeIdIdx == null || shapeIdIdx == null) return Map.of();
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                List<String> tokens = parseCsvLine(line);
+                String routeId = getValue(tokens, routeIdIdx);
+                String shapeId = getValue(tokens, shapeIdIdx);
+                if (isBlank(routeId) || isBlank(shapeId)) continue;
+                if (trainRouteIds.contains(routeId)) {
+                    routeToShapeId.putIfAbsent(routeId, shapeId);
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("trips.txt unreadable for shape loading; train polylines will use stop coords", e);
+            return Map.of();
+        }
+
+        Set<String> neededShapeIds = new HashSet<>(routeToShapeId.values());
+        if (neededShapeIds.isEmpty()) return Map.of();
+
+        // Step 3: load shape points only for the needed shape IDs
+        // Raw: shapeId → list of [sequence, lat, lon]
+        Map<String, List<double[]>> rawByShapeId = new HashMap<>();
+        try (BufferedReader reader = openGtfsReader("shapes.txt")) {
+            String header = reader.readLine();
+            if (header == null) return Map.of();
+            Map<String, Integer> col = buildColumnIndex(header);
+            Integer shapeIdIdx = col.get("shape_id");
+            Integer latIdx     = col.get("shape_pt_lat");
+            Integer lonIdx     = col.get("shape_pt_lon");
+            Integer seqIdx     = col.get("shape_pt_sequence");
+            if (shapeIdIdx == null || latIdx == null || lonIdx == null || seqIdx == null) return Map.of();
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                List<String> tokens = parseCsvLine(line);
+                String shapeId = getValue(tokens, shapeIdIdx);
+                if (!neededShapeIds.contains(shapeId)) continue;
+                try {
+                    double lat = Double.parseDouble(getValue(tokens, latIdx));
+                    double lon = Double.parseDouble(getValue(tokens, lonIdx));
+                    int    seq = Integer.parseInt(getValue(tokens, seqIdx));
+                    rawByShapeId.computeIfAbsent(shapeId, k -> new ArrayList<>())
+                                .add(new double[]{seq, lat, lon});
+                } catch (NumberFormatException ignored) {}
+            }
+        } catch (IOException e) {
+            LOGGER.warn("shapes.txt unreadable; train polylines will use stop coords", e);
+            return Map.of();
+        }
+
+        // Step 4: sort each shape by sequence and strip the sequence number
+        Map<String, List<double[]>> shapeById = new HashMap<>();
+        for (Map.Entry<String, List<double[]>> entry : rawByShapeId.entrySet()) {
+            List<double[]> sorted = entry.getValue().stream()
+                    .sorted(Comparator.comparingDouble(p -> p[0]))
+                    .map(p -> new double[]{p[1], p[2]})
+                    .collect(Collectors.toList());
+            shapeById.put(entry.getKey(), sorted);
+        }
+
+        // Step 5: build routeId → shape
+        Map<String, List<double[]>> result = new HashMap<>();
+        for (Map.Entry<String, String> entry : routeToShapeId.entrySet()) {
+            List<double[]> shape = shapeById.get(entry.getValue());
+            if (shape != null && shape.size() >= 2) {
+                result.put(entry.getKey(), shape);
+            }
+        }
+        return result;
+    }
+
+    
     // CSV / file utilities (unchanged from original)
-    // -------------------------------------------------------------------------
+    
 
     private BufferedReader openGtfsReader(String fileName) throws IOException {
         String[] candidatePaths = {
@@ -430,16 +538,15 @@ public class GtfsGraphLoader {
         return value == null || value.isBlank();
     }
 
-    // -------------------------------------------------------------------------
+    
     // Inner helpers
-    // -------------------------------------------------------------------------
+    
 
     private record StopTimeRow(String stopId, int sequence, int arrivalSeconds) {}
 
-    /**
-     * Accumulates travel time observations for a stop-pair on a single route,
-     * then produces an averaged StopEdge for the adjacency list.
-     */
+  
+    // Helper class to aggregate edge stats while processing trips.txt. We keep track of total travel time, sample count, and mode counts for each stop-pair + route combination.
+    // This allows us to compute an average travel time and dominant mode for each edge in the adjacency list, which improves routing accuracy and provides better default times for edges without schedule data.
     private static class StopEdgeStats {
         private final String fromStopId;
         private final String toStopId;

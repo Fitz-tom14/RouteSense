@@ -2,7 +2,6 @@
 const MODE_COLOR = {
   BUS:   "#3b82f6",
   TRAIN: "#f59e0b",
-  TRAM:  "#8b5cf6",
 };
 
 // Props:
@@ -14,7 +13,6 @@ function FilterPanel({ selectedModes, onChangeModes, live, onChangeLive }) {
   const modes = [
     { key: "BUS",   label: "Bus" },
     { key: "TRAIN", label: "Train" },
-    { key: "TRAM",  label: "Tram" },
   ];
 
   // Toggles a transport mode on or off when the corresponding button is clicked.
@@ -78,10 +76,6 @@ function FilterPanel({ selectedModes, onChangeModes, live, onChangeLive }) {
         <div className="legend-item">
           <span className="legend-dot" style={{ background: "#f59e0b" }} />
           Train station
-        </div>
-        <div className="legend-item">
-          <span className="legend-dot" style={{ background: "#8b5cf6" }} />
-          Tram stop
         </div>
       </div>
     </aside>

@@ -23,4 +23,8 @@ public interface StopGraphRepository {
     // Returns a map of GTFS routeId → route short name (e.g. "405", "DART").
     // Used to label journey legs with the human-readable service name.
     Map<String, String> getRouteShortNames();
+
+    // Returns shape geometry for train routes: routeId → ordered list of [lat, lon] points.
+    // Used to draw accurate train polylines on the map instead of straight lines between stops.
+    Map<String, List<double[]>> getRouteShapes();
 }

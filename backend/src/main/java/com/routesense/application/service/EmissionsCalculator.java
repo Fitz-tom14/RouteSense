@@ -3,10 +3,8 @@ package com.routesense.application.service;
 import com.routesense.domain.model.TransportMode;
 import org.springframework.stereotype.Component;
 
-/**
- * Centralized emissions and distance calculations for route comparison.
- * Emission factors are approximate and intended for comparison only.
- */
+// Service responsible for calculating CO2 emissions for different transport modes and distances.
+// This is used by the journey search use case to estimate the emissions for each journey option and to calculate the car baseline emissions for comparison.
 @Component
 public class EmissionsCalculator {
 
@@ -42,7 +40,6 @@ public class EmissionsCalculator {
         return switch (mode) {
             case WALK -> WALK_G_PER_KM;
             case BIKE -> BIKE_G_PER_KM;
-            case TRAM, LUAS -> TRAM_LUAS_G_PER_KM;
             case TRAIN -> TRAIN_G_PER_KM;
             case BUS -> BUS_G_PER_KM;
             default -> DEFAULT_PUBLIC_TRANSPORT_G_PER_KM;
