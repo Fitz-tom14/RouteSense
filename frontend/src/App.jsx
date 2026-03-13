@@ -26,10 +26,10 @@ function App() {
   const [selectedJourney, setSelectedJourney] = useState(null);
   const [selectedJourneyCarCo2, setSelectedJourneyCarCo2] = useState(0);
 
-  function handleSelectJourney(route, carBaselineCo2Grams) {
+  function handleSelectJourney(route, carBaselineCo2Grams, destination) {
     setSelectedJourney(route);
     setSelectedJourneyCarCo2(carBaselineCo2Grams);
-    saveJourney(route, carBaselineCo2Grams);
+    saveJourney(route, carBaselineCo2Grams, destination);
     setActivePage("Home");
   }
 

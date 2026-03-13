@@ -336,7 +336,7 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
                   key={`${route.durationSeconds}-${route.transfers}-${index}`}
                   route={route}
                   carBaselineCo2Grams={carBaselineCo2Grams}
-                  onSelect={onSelectJourney ? (r) => onSelectJourney(r, carBaselineCo2Grams) : undefined}
+                  onSelect={onSelectJourney ? (r) => onSelectJourney(r, carBaselineCo2Grams, destinationText || destinationStop?.name) : undefined}
                 />
               ))}
 
@@ -574,7 +574,7 @@ function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry
     const lastLeg     = legs[legs.length - 1];
     const hasDestWalk = lastLeg && lastLeg.mode === "Walk" && allStops.length >= 2;
 
-    // ── Bus portion ──────────────────────────────────────────────────────────
+    // Bus portion 
     const busStops  = hasDestWalk ? allStops.slice(0, allStops.length - 1) : allStops;
     const fallback  = busStops
       .filter((s) => s.latitude != null && s.longitude != null)
@@ -588,7 +588,7 @@ function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry
 
     const wg = walkGeometries[index] || {};
 
-    // ── Walk: origin pin → first bus stop ────────────────────────────────────
+    // Walk: origin pin → first bus stop 
     if (originPin && busStops.length > 0) {
       const first = busStops[0];
       if (first.latitude != null && first.longitude != null) {
@@ -598,7 +598,7 @@ function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry
       }
     }
 
-    // ── Walk: last bus stop → destination stop (backend walk leg) ────────────
+    // Walk: last bus stop → destination stop (backend walk leg) 
     if (hasDestWalk) {
       const walkFrom = allStops[allStops.length - 2];
       const walkTo   = allStops[allStops.length - 1];
@@ -609,7 +609,7 @@ function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry
       }
     }
 
-    // ── Walk: last stop → destination pin ────────────────────────────────────
+    // Walk: last stop → destination pin 
     if (destinationPin && allStops.length > 0) {
       const lastStop = allStops[allStops.length - 1];
       if (lastStop?.latitude != null) {

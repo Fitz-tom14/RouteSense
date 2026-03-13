@@ -5,9 +5,10 @@ const STORAGE_KEY = "routesense_history";
 
 // Save a completed journey to history.
 // route = the selected public transport option; carCo2Grams = car baseline CO₂.
-export function saveJourney(route, carCo2Grams) {
+export function saveJourney(route, carCo2Grams, destination) {
   const history = loadHistory();
 
+  // Create a new history entry with the relevant data.
   const entry = {
     timestamp: Date.now(),
     date: new Date().toISOString().split("T")[0], // "YYYY-MM-DD"
@@ -15,9 +16,11 @@ export function saveJourney(route, carCo2Grams) {
     co2Grams: route.co2Grams || 0,
     carCo2Grams: carCo2Grams || 0,
     modeSummary: route.modeSummary || "Transit",
+    destination: destination || "",
     transfers: route.legs ? route.legs.filter(l => l.mode !== "WALK").length - 1 : 0,
   };
 
+  // Append the new entry to history and save back to localStorage.
   history.push(entry);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
 }

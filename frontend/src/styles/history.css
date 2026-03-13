@@ -8,7 +8,7 @@
   padding-bottom: 70px;
 }
 
-/* ── Period Toggle ─────────────────────────────────────────── */
+/*  Period Toggle  */
 
 .period-toggle {
   display: flex;
@@ -35,7 +35,7 @@
   border-color: #4a90e2;
 }
 
-/* ── KPI Summary Row ───────────────────────────────────────── */
+/* KPI Summary Row*/
 
 .history-kpis {
   display: grid;
@@ -77,7 +77,7 @@
 .kpi-val.green { color: #16a34a; }
 .kpi-val.blue  { color: #4a90e2; }
 
-/* ── Section Cards ─────────────────────────────────────────── */
+/*Section Cards  */
 
 .history-section {
   background: #fff;
@@ -94,7 +94,7 @@
   margin-bottom: 1rem;
 }
 
-/* ── Bar Chart (journeys per day / CO₂ saved per day) ─────── */
+/*  Bar Chart (journeys per day / CO₂ saved per day) */
 
 .bar-chart {
   display: flex;
@@ -109,6 +109,25 @@
   flex-direction: column;
   align-items: center;
   height: 100%;
+  position: relative;
+}
+
+/* Tooltip shown on hover */
+.bar-col[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% - 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
 }
 
 .bar-track {
@@ -146,7 +165,7 @@
   visibility: hidden;
 }
 
-/* ── Mode Breakdown ────────────────────────────────────────── */
+/* Mode Breakdown */
 
 .mode-rows {
   display: flex;
@@ -161,10 +180,10 @@
 }
 
 .mode-row-label {
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: #555;
-  width: 90px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #333;
+  width: 70px;
   flex-shrink: 0;
 }
 
@@ -188,12 +207,12 @@
   font-size: 0.8rem;
   font-weight: 600;
   color: #888;
-  width: 24px;
+  width: 36px;
   text-align: right;
   flex-shrink: 0;
 }
 
-/* ── Recent Journeys List ──────────────────────────────────── */
+/*  Recent Journeys List  */
 
 .journey-list {
   display: flex;
@@ -246,7 +265,7 @@
   color: #16a34a;
 }
 
-/* ── Empty State ───────────────────────────────────────────── */
+/* Empty State */
 
 .history-empty {
   text-align: center;
@@ -259,7 +278,7 @@
   margin-top: 0.5rem;
 }
 
-/* ── Logout ────────────────────────────────────────────────── */
+/*  Logout  */
 
 .logout-container {
   padding: 0.5rem 1.5rem 1rem;

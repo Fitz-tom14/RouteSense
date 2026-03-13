@@ -42,16 +42,37 @@ function formatCo2(grams) {
   return `${Math.round(grams)} g`;
 }
 
+// Extract the primary transport mode from a modeSummary string like "Walk → Bus 405" → Bus
+const MODE_RULES = [
+  { match: /train/i,  label: "Train",  icon: "🚆" },
+  { match: /tram/i,   label: "Tram",   icon: "🚊" },
+  { match: /bus/i,    label: "Bus",    icon: "🚌" },
+  { match: /bike/i,   label: "Bike",   icon: "🚲" },
+  { match: /walk/i,   label: "Walk",   icon: "🚶" },
+];
+
+function simplifyMode(modeSummary) {
+  const str = modeSummary || "";
+  for (const rule of MODE_RULES) {
+    if (rule.match.test(str)) return { label: rule.label, icon: rule.icon };
+  }
+  return { label: "Transit", icon: "🚍" };
+}
+
 //  Bar Chart Component
 
 // Renders a simple CSS bar chart. `data` is an array of { label, value }.
 // `color` is "blue" (default) or "green".
-function BarChart({ data, color = "blue", period }) {
+function BarChart({ data, color = "blue", period, tooltipFn }) {
   const maxVal = Math.max(...data.map(d => d.value), 1);
   return (
     <div className={`bar-chart ${period === "month" ? "month" : ""}`}>
       {data.map(d => (
-        <div className="bar-col" key={d.label + d.date}>
+        <div
+          className="bar-col"
+          key={d.label + d.date}
+          data-tooltip={tooltipFn ? tooltipFn(d) : undefined}
+        >
           <div className="bar-track">
             <div
               className={`bar-fill ${color === "green" ? "green" : ""}`}
@@ -92,10 +113,10 @@ function HistoryPage({ activePage, onNavigate, onLogout }) {
     ? Math.round(filtered.reduce((sum, j) => sum + j.durationSeconds, 0) / totalJourneys / 60)
     : 0;
 
-  // Count how many times each modeSummary was used.
+  // Count how many times each simplified mode was used.
   const modeCounts = filtered.reduce((acc, j) => {
-    const key = j.modeSummary || "Transit";
-    acc[key] = (acc[key] || 0) + 1;
+    const { label } = simplifyMode(j.modeSummary);
+    acc[label] = (acc[label] || 0) + 1;
     return acc;
   }, {});
   const topMode = Object.entries(modeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "--";
@@ -182,13 +203,23 @@ function HistoryPage({ activePage, onNavigate, onLogout }) {
       {/* Journeys per day bar chart */}
       <div className="history-section">
         <div className="section-title">Journeys per Day</div>
-        <BarChart data={journeyChartData} color="blue" period={period} />
+        <BarChart
+          data={journeyChartData}
+          color="blue"
+          period={period}
+          tooltipFn={d => d.value === 1 ? "1 trip" : `${d.value} trips`}
+        />
       </div>
 
       {/* CO₂ saved per day bar chart */}
       <div className="history-section">
         <div className="section-title">CO₂ Saved vs Driving (g)</div>
-        <BarChart data={co2ChartData} color="green" period={period} />
+        <BarChart
+          data={co2ChartData}
+          color="green"
+          period={period}
+          tooltipFn={d => `${formatCo2(d.value)} CO₂ saved`}
+        />
       </div>
 
       {/* Mode breakdown */}
@@ -196,18 +227,22 @@ function HistoryPage({ activePage, onNavigate, onLogout }) {
         <div className="history-section">
           <div className="section-title">Transport Mode Breakdown</div>
           <div className="mode-rows">
-            {modeEntries.map(([mode, count]) => (
+            {modeEntries.map(([mode, count]) => {
+              const { icon } = MODE_RULES.find(r => r.label === mode) || { icon: "🚍" };
+              const pct = Math.round((count / totalJourneys) * 100);
+              return (
               <div className="mode-row" key={mode}>
-                <span className="mode-row-label">{mode}</span>
+                <span className="mode-row-label">{icon} {mode}</span>
                 <div className="mode-bar-track">
                   <div
                     className="mode-bar-fill"
-                    style={{ width: `${(count / totalJourneys) * 100}%` }}
+                    style={{ width: `${pct}%` }}
                   />
                 </div>
-                <span className="mode-row-count">{count}</span>
+                <span className="mode-row-count">{pct}%</span>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -219,7 +254,9 @@ function HistoryPage({ activePage, onNavigate, onLogout }) {
           {recent.map(j => (
             <div className="journey-item" key={j.timestamp}>
               <div className="journey-item-left">
-                <span className="journey-item-mode">{j.modeSummary || "Transit"}</span>
+                <span className="journey-item-mode">
+                  {j.destination ? `Trip to ${j.destination}` : (j.modeSummary || "Transit")}
+                </span>
                 <span className="journey-item-date">
                   {new Date(j.timestamp).toLocaleDateString("en-IE", {
                     weekday: "short", day: "numeric", month: "short"

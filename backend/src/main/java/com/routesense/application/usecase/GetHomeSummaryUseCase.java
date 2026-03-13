@@ -9,19 +9,11 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/**
- * Use case responsible for assembling the data required
- * to render the Home page summary.
- *
- * At this stage, the data is placeholder-only and will be
- * replaced with real calculations and data sources later.
- */
+// This use case is responsible for generating the data needed to populate the Home page of the application.
 @Component
 public class GetHomeSummaryUseCase {
 
-    /**
-     * Builds the home page response based on the selected location.
-     */
+   // In a real implementation, this method would fetch and compute data based on the user's location and historical travel patterns.
     public HomeResponseDto execute(String location) {
 
         // Fallback text used when no location has been selected yet
@@ -29,7 +21,7 @@ public class GetHomeSummaryUseCase {
             ? "Select location"
             : location;
 
-        // Placeholder KPI values (to be replaced with real metrics)
+        // Placeholder KPI values
         KpisDto kpis = new KpisDto("-- min", "-- kg CO2");
 
         // Temporary mode usage breakdown for UI scaffolding

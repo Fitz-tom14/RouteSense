@@ -8,15 +8,13 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Use case responsible for retrieving map stops for the Map View screen.
- *
- * This keeps controller logic thin and makes the behaviour testable.
- */
-
+// This use case is responsible for fetching the transport stops to be displayed on the Map page, based on the user's selected location and transport mode filters.
+// It interacts with the MapDataSource to retrieve the relevant data, which is currently mocked for development purposes.
 @Component
 public class GetMapStopsUseCase {
 
+    // The MapDataSource is injected into the use case, allowing it to fetch the necessary data for the Map page.
+    //  In a real implementation, this would likely involve fetching data from an external API or database.
     private final MapDataSource mapDataSource;
     
     public GetMapStopsUseCase(MapDataSource mapDataSource) {
