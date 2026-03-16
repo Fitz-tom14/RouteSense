@@ -242,6 +242,11 @@
   color: #1a1a1a;
 }
 
+.journey-item-via {
+  font-size: 0.75rem;
+  color: #666;
+}
+
 .journey-item-date {
   font-size: 0.75rem;
   color: #999;

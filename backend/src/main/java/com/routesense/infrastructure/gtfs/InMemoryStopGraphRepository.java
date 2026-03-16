@@ -1,6 +1,7 @@
 package com.routesense.infrastructure.gtfs;
 
 import com.routesense.application.port.StopGraphRepository;
+import com.routesense.domain.model.FootpathEdge;
 import com.routesense.domain.model.ScheduledConnection;
 import com.routesense.domain.model.Stop;
 import com.routesense.domain.model.StopEdge;
@@ -48,5 +49,10 @@ public class InMemoryStopGraphRepository implements StopGraphRepository {
     @Override
     public Map<String, List<double[]>> getRouteShapes() {
         return gtfsGraphLoader.getRouteShapes();
+    }
+
+    @Override
+    public Map<String, List<FootpathEdge>> getFootpaths() {
+        return gtfsGraphLoader.getFootpaths();
     }
 }

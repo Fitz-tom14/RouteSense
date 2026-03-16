@@ -1,5 +1,6 @@
 package com.routesense.infrastructure.gtfs;
 
+import com.routesense.domain.model.FootpathEdge;
 import com.routesense.domain.model.ScheduledConnection;
 import com.routesense.domain.model.Stop;
 import com.routesense.domain.model.StopEdge;
@@ -32,7 +33,9 @@ import java.util.stream.Collectors;
 @Component
 public class GtfsGraphLoader {
 
-    private static final int DEFAULT_EDGE_TIME_SECONDS = 120;
+    private static final int    DEFAULT_EDGE_TIME_SECONDS  = 120;
+    private static final double MAX_FOOTPATH_DISTANCE_KM   = 0.3;  // 300 m — max walking distance for a mid-journey transfer
+    private static final double WALK_SPEED_KMH             = 4.8;  // walking speed used to compute footpath travel time
     private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class);
 
     private Map<String, Stop> stops = Map.of();
@@ -40,6 +43,7 @@ public class GtfsGraphLoader {
     private Map<String, List<ScheduledConnection>> scheduleByStop = Map.of();
     private Map<String, String> routeShortNames = Map.of(); // routeId → shortName (e.g. "405", "DART")
     private Map<String, List<double[]>> routeShapes = Map.of(); // routeId → ordered [lat,lon] shape points (train routes only)
+    private Map<String, List<FootpathEdge>> footpaths = Map.of(); // stopId → nearby stops reachable on foot
 
     @PostConstruct
     public void loadGraph() {
@@ -75,8 +79,12 @@ public class GtfsGraphLoader {
 
         this.routeShapes = Collections.unmodifiableMap(loadRouteShapes());
 
-        LOGGER.info("GTFS loaded: {} stops, {} stops with edges, {} stops with schedule data, {} routes with short names, {} train route shapes",
-                parsedStops.size(), immutableAdjacency.size(), immutableSchedule.size(), shortNameMap.size(), this.routeShapes.size());
+        // Build walking links between stops that are within 300 m of each other.
+        // This is what enables train → walk → bus multi-modal journeys.
+        this.footpaths = Collections.unmodifiableMap(buildFootpaths(parsedStops));
+
+        LOGGER.info("GTFS loaded: {} stops, {} stops with edges, {} stops with schedule data, {} routes with short names, {} train route shapes, {} stops with footpath links",
+                parsedStops.size(), immutableAdjacency.size(), immutableSchedule.size(), shortNameMap.size(), this.routeShapes.size(), this.footpaths.size());
     }
 
     public Map<String, Stop> getStops() {
@@ -99,7 +107,11 @@ public class GtfsGraphLoader {
         return routeShapes;
     }
 
-   
+    public Map<String, List<FootpathEdge>> getFootpaths() {
+        return footpaths;
+    }
+
+
     // Stop loading
     
 
@@ -466,7 +478,66 @@ public class GtfsGraphLoader {
         return result;
     }
 
-    
+
+    // Footpath computation
+
+
+    // Builds a map of stopId → list of nearby stops reachable on foot (within 300 m).
+    // This is the key to multi-modal routing: after arriving at a train station by train,
+    // the Dijkstra can "walk" to a nearby bus stop and continue the journey by bus.
+    //
+    // Uses a grid to avoid checking every pair of 14,000+ stops (which would be ~200M comparisons).
+    // Each grid cell is ~300 m wide so we only compare a stop against its 3x3 neighbourhood of cells.
+    private Map<String, List<FootpathEdge>> buildFootpaths(Map<String, Stop> stops) {
+        // Bucket stops into ~300 m grid cells (0.003° lat ≈ 333 m, 0.005° lon ≈ 334 m at 53°N)
+        final double cellLat = 0.003;
+        final double cellLon = 0.005;
+
+        Map<String, List<Stop>> grid = new HashMap<>();
+        for (Stop stop : stops.values()) {
+            int gLat = (int) Math.floor(stop.getLatitude()  / cellLat);
+            int gLon = (int) Math.floor(stop.getLongitude() / cellLon);
+            grid.computeIfAbsent(gLat + "," + gLon, k -> new ArrayList<>()).add(stop);
+        }
+
+        Map<String, List<FootpathEdge>> footpaths = new HashMap<>();
+        for (Stop stop : stops.values()) {
+            int gLat = (int) Math.floor(stop.getLatitude()  / cellLat);
+            int gLon = (int) Math.floor(stop.getLongitude() / cellLon);
+
+            // Check the 3×3 neighbourhood of grid cells to find all stops within 300 m
+            for (int dLat = -1; dLat <= 1; dLat++) {
+                for (int dLon = -1; dLon <= 1; dLon++) {
+                    String cell = (gLat + dLat) + "," + (gLon + dLon);
+                    for (Stop other : grid.getOrDefault(cell, List.of())) {
+                        if (other.getId().equals(stop.getId())) continue;
+                        double distKm = footpathHaversineKm(
+                                stop.getLatitude(), stop.getLongitude(),
+                                other.getLatitude(), other.getLongitude());
+                        if (distKm <= MAX_FOOTPATH_DISTANCE_KM) {
+                            int walkSecs = (int) Math.round((distKm / WALK_SPEED_KMH) * 3600);
+                            footpaths.computeIfAbsent(stop.getId(), k -> new ArrayList<>())
+                                     .add(new FootpathEdge(other.getId(), walkSecs));
+                        }
+                    }
+                }
+            }
+        }
+        return footpaths;
+    }
+
+    // Haversine distance in km — local copy used during graph loading (avoids a Spring bean dependency).
+    private double footpathHaversineKm(double lat1, double lon1, double lat2, double lon2) {
+        final double R = 6371.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                 + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                 * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+
     // CSV / file utilities (unchanged from original)
     
 

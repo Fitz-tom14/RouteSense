@@ -1,5 +1,6 @@
 package com.routesense.application.port;
 
+import com.routesense.domain.model.FootpathEdge;
 import com.routesense.domain.model.ScheduledConnection;
 import com.routesense.domain.model.Stop;
 import com.routesense.domain.model.StopEdge;
@@ -27,4 +28,8 @@ public interface StopGraphRepository {
     // Returns shape geometry for train routes: routeId → ordered list of [lat, lon] points.
     // Used to draw accurate train polylines on the map instead of straight lines between stops.
     Map<String, List<double[]>> getRouteShapes();
+
+    // Returns walking links between nearby stops (within 300 m).
+    // Used by the Dijkstra to allow mid-journey transfers between e.g. a train station and a nearby bus stop.
+    Map<String, List<FootpathEdge>> getFootpaths();
 }

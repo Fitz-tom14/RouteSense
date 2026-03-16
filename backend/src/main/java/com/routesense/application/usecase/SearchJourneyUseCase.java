@@ -2,6 +2,7 @@ package com.routesense.application.usecase;
 
 import com.routesense.application.port.StopGraphRepository;
 import com.routesense.application.service.EmissionsCalculator;
+import com.routesense.domain.model.FootpathEdge;
 import com.routesense.domain.model.JourneyLeg;
 import com.routesense.domain.model.JourneyOption;
 import com.routesense.domain.model.JourneyOptionType;
@@ -88,6 +89,7 @@ public class SearchJourneyUseCase {
         Map<String, List<ScheduledConnection>> schedule       = stopGraphRepository.getSchedule();
         Map<String, String>                    routeShortNames = stopGraphRepository.getRouteShortNames();
         Map<String, List<double[]>>            routeShapes    = stopGraphRepository.getRouteShapes();
+        Map<String, List<FootpathEdge>>        footpaths      = stopGraphRepository.getFootpaths();
 
         // --- Resolve destination candidates ---
         // Build a list of destination stop IDs to try. When coordinates are given we try:
@@ -231,24 +233,24 @@ public class SearchJourneyUseCase {
 
                     // Primary path: real departure times from GTFS schedule
                     ScheduledPath fastest = scheduleAwareDijkstra(
-                            scheduleOrigin, scheduleDest, schedule, stops, boardingTime, FASTEST_TRANSFER_PENALTY_SECONDS);
+                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime, FASTEST_TRANSFER_PENALTY_SECONDS);
                     ScheduledPath fewestTransfers = scheduleAwareDijkstra(
-                            scheduleOrigin, scheduleDest, schedule, stops, boardingTime, TRANSFER_SCORE_PENALTY);
+                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime, TRANSFER_SCORE_PENALTY);
                     // 3rd option: next bus 30 minutes later (catches a different service)
                     ScheduledPath laterOption = scheduleAwareDijkstra(
-                            scheduleOrigin, scheduleDest, schedule, stops, boardingTime + 1800, FASTEST_TRANSFER_PENALTY_SECONDS);
+                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime + 1800, FASTEST_TRANSFER_PENALTY_SECONDS);
                     // If no buses found AND it is late night (after 21:00), retry from next morning.
                     boolean isLateNight = boardingTime > 21 * 3600;
                     if (fastest == null && isLateNight) {
-                        fastest = scheduleAwareDijkstra(scheduleOrigin, scheduleDest, schedule, stops, 0, FASTEST_TRANSFER_PENALTY_SECONDS);
+                        fastest = scheduleAwareDijkstra(scheduleOrigin, scheduleDest, schedule, stops, footpaths, 0, FASTEST_TRANSFER_PENALTY_SECONDS);
                     }
                     if (fewestTransfers == null && isLateNight) {
                         fewestTransfers = scheduleAwareDijkstra(
-                                scheduleOrigin, scheduleDest, schedule, stops, 0, TRANSFER_SCORE_PENALTY);
+                                scheduleOrigin, scheduleDest, schedule, stops, footpaths, 0, TRANSFER_SCORE_PENALTY);
                     }
                     if (laterOption == null && isLateNight) {
                         laterOption = scheduleAwareDijkstra(
-                                scheduleOrigin, scheduleDest, schedule, stops, 3600, FASTEST_TRANSFER_PENALTY_SECONDS);
+                                scheduleOrigin, scheduleDest, schedule, stops, footpaths, 3600, FASTEST_TRANSFER_PENALTY_SECONDS);
                     }
 
                     addScheduledOption(optionsToScore, seenSignatures, fastest,        stops, walkSecs, destId, routeShapes);
@@ -314,6 +316,7 @@ public class SearchJourneyUseCase {
             String destinationStopId,
             Map<String, List<ScheduledConnection>> schedule,
             Map<String, Stop> stops,
+            Map<String, List<FootpathEdge>> footpaths,
             int startTimeSeconds,
             int transferPenaltySeconds
     ) {
@@ -327,7 +330,7 @@ public class SearchJourneyUseCase {
         PriorityQueue<TripState> queue     = new PriorityQueue<>(Comparator.comparingInt(TripState::score));
 
         // Initial state: at the origin stop, not on any route, at the specified start time, with zero transfers and zero score.
-        TripState start = new TripState(originStopId, null, startTimeSeconds, 0, 0, null, null);
+        TripState start = new TripState(originStopId, null, startTimeSeconds, 0, 0, null, null, false);
         queue.add(start);
         bestScore.put(stateKey(originStopId, null), 0);
 
@@ -380,10 +383,12 @@ public class SearchJourneyUseCase {
                     continue;
                 }
 
-                // Direction filter: at the origin stop (no route yet), skip connections that move
-                // more than 300 m further from the destination.  This prevents boarding loop routes
-                // in the wrong direction (e.g. Bus 405 going west before looping back east).
-                if (current.routeId() == null && !Double.isNaN(destLat)) {
+                // Direction filter: at the origin stop (no route yet, and not reached via a footpath walk),
+                // skip connections that move more than 100 m further from the destination.
+                // This prevents boarding a loop route in the wrong direction at the very start.
+                // We skip this filter after a footpath walk so we don't over-restrict stops near
+                // the origin where buses may briefly move away before continuing toward the destination.
+                if (current.routeId() == null && !current.walkedHere() && !Double.isNaN(destLat)) {
                     Stop curStop  = stops.get(current.stopId());
                     Stop nextStop = stops.get(conn.getToStopId());
                     if (curStop != null && nextStop != null) {
@@ -413,8 +418,34 @@ public class SearchJourneyUseCase {
                             newTransfers,
                             newScore,
                             current,
-                            conn
+                            conn,
+                            false
                     ));
+                }
+            }
+
+            // Footpath transfers: walk to any stop within 300 m.
+            // This is what enables train → walk → bus journeys.
+            // We only walk one hop (walkedHere prevents chaining walk→walk→walk).
+            if (!current.walkedHere()) {
+                for (FootpathEdge fp : footpaths.getOrDefault(current.stopId(), List.of())) {
+                    int arriveAfterWalk = current.arrivalTime() + fp.walkSeconds();
+                    int walkScore       = arriveAfterWalk + current.transfers() * transferPenaltySeconds;
+                    // Keep the current routeId so that boarding transit at the new stop counts as a transfer
+                    String walkKey = stateKey(fp.toStopId(), current.routeId());
+                    if (walkScore < bestScore.getOrDefault(walkKey, Integer.MAX_VALUE)) {
+                        bestScore.put(walkKey, walkScore);
+                        queue.add(new TripState(
+                                fp.toStopId(),
+                                current.routeId(),  // maintain route context — boarding here will count as a transfer
+                                arriveAfterWalk,
+                                current.transfers(),
+                                walkScore,
+                                current,
+                                null,               // null connection = walk leg (no scheduled vehicle)
+                                true                // walkedHere = true prevents further walk chaining
+                        ));
+                    }
                 }
             }
         }
@@ -430,22 +461,37 @@ public class SearchJourneyUseCase {
         return reconstructScheduledPath(destinationState, startTimeSeconds);
     }
 
-    //Walks back through the parent-pointer chain to build the list of legs
+    // Walks back through the parent-pointer chain to build the list of legs.
+    // Each step is either a transit leg (connection != null) or a walk leg (connection == null).
     private ScheduledPath reconstructScheduledPath(TripState destination, int startTime) {
         LinkedList<PathLeg> legs = new LinkedList<>();
         TripState current = destination;
 
-        while (current.parent() != null && current.connection() != null) {
-            ScheduledConnection conn = current.connection();
-            legs.addFirst(new PathLeg(
-                    current.parent().stopId(),
-                    current.stopId(),
-                    conn.getRouteId(),
-                    conn.getRouteShortName(),
-                    conn.getMode(),
-                    conn.getDepartureTimeSeconds(),
-                    conn.getArrivalTimeSeconds()
-            ));
+        while (current.parent() != null) {
+            if (current.connection() != null) {
+                // Transit leg — use the scheduled connection for times and service name
+                ScheduledConnection conn = current.connection();
+                legs.addFirst(new PathLeg(
+                        current.parent().stopId(),
+                        current.stopId(),
+                        conn.getRouteId(),
+                        conn.getRouteShortName(),
+                        conn.getMode(),
+                        conn.getDepartureTimeSeconds(),
+                        conn.getArrivalTimeSeconds()
+                ));
+            } else {
+                // Walk leg — the user walks between two nearby stops (footpath transfer)
+                legs.addFirst(new PathLeg(
+                        current.parent().stopId(),
+                        current.stopId(),
+                        null,
+                        null,
+                        TransportMode.WALK,
+                        current.parent().arrivalTime(),
+                        current.arrivalTime()
+                ));
+            }
             current = current.parent();
         }
 
@@ -617,8 +663,9 @@ public class SearchJourneyUseCase {
         return total;
     }
 
-    // Builds a user-friendly mode summary like "Walk → Bus 405 → Train" by looking at the sequence of legs and their modes.
-    // Consecutive legs on the same route are collapsed (e.g. "Bus 405 → Bus 405" becomes just "Bus 405").  If the user has to walk at the start to reach the first stop, include that in the summary as well.
+    // Builds a user-friendly mode summary like "Walk → Bus 405 → Train" from the leg sequence.
+    // Intermediate footpath walk legs are skipped — they are short transfers, not main modes.
+    // Only the initial walk to the first stop is included (walkAtStart flag).
     private String buildModeSummaryFromLegs(List<PathLeg> legs, boolean walkAtStart) {
         List<String> parts = new ArrayList<>();
         if (walkAtStart) {
@@ -626,6 +673,8 @@ public class SearchJourneyUseCase {
         }
         String prevLabel = null;
         for (PathLeg leg : legs) {
+            // Skip intermediate walk legs (footpath transfers) — they clutter the summary
+            if (leg.mode() == TransportMode.WALK) continue;
             String label = (leg.routeShortName() != null && !leg.routeShortName().isBlank())
                     ? formatMode(leg.mode()) + " " + leg.routeShortName()
                     : formatMode(leg.mode());
@@ -1268,7 +1317,8 @@ public class SearchJourneyUseCase {
         int weight(StopEdge edge);
     }
 
-    // State node for the schedule-aware Dijkstra priority queue. 
+    // State node for the schedule-aware Dijkstra priority queue.
+    // walkedHere = true means we arrived at this stop via a footpath walk (prevents walk→walk chaining).
     private record TripState(
             String              stopId,
             String              routeId,
@@ -1276,7 +1326,8 @@ public class SearchJourneyUseCase {
             int                 transfers,
             int                 score,
             TripState           parent,
-            ScheduledConnection connection
+            ScheduledConnection connection,
+            boolean             walkedHere
     ) {}
 
     // One transit leg: board at fromStopId on a named route, alight at toStopId. 

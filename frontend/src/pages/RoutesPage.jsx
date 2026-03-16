@@ -336,7 +336,11 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
                   key={`${route.durationSeconds}-${route.transfers}-${index}`}
                   route={route}
                   carBaselineCo2Grams={carBaselineCo2Grams}
-                  onSelect={onSelectJourney ? (r) => onSelectJourney(r, carBaselineCo2Grams, destinationText || destinationStop?.name) : undefined}
+                  onSelect={onSelectJourney ? (r) => {
+                    const lastLeg = r.legs?.findLast?.(l => l.mode !== "Walk") ?? r.legs?.[r.legs.length - 1];
+                    const dest = destinationText || destinationStop?.name || lastLeg?.toStopName;
+                    onSelectJourney(r, carBaselineCo2Grams, dest);
+                  } : undefined}
                 />
               ))}
 

@@ -1,4 +1,4 @@
-// HistoryPage - shows a dashboard of the user's journey history stored in localStorage.
+// HistoryPage - shows a dashboard of the user's journey history stored in the backend database.
 // Users can toggle between a weekly and monthly view.
 // Displays: summary KPIs, journeys-per-day bar chart, CO₂ saved bar chart,
 // transport mode breakdown, and a list of recent journeys.
@@ -51,6 +51,7 @@ const MODE_RULES = [
   { match: /walk/i,   label: "Walk",   icon: "🚶" },
 ];
 
+// Simplify a modeSummary into a primary mode label and icon for display in the KPIs and mode breakdown.
 function simplifyMode(modeSummary) {
   const str = modeSummary || "";
   for (const rule of MODE_RULES) {
@@ -92,9 +93,9 @@ function HistoryPage({ activePage, onNavigate, onLogout }) {
   const [period, setPeriod] = useState("week"); // "week" | "month"
   const [history, setHistory] = useState([]);
 
-  // Load journey history from localStorage on mount.
+  // Load journey history from the backend on mount.
   useEffect(() => {
-    setHistory(loadHistory());
+    loadHistory().then(data => setHistory(data));
   }, []);
 
   // Filter to the selected period.
@@ -255,8 +256,11 @@ function HistoryPage({ activePage, onNavigate, onLogout }) {
             <div className="journey-item" key={j.timestamp}>
               <div className="journey-item-left">
                 <span className="journey-item-mode">
-                  {j.destination ? `Trip to ${j.destination}` : (j.modeSummary || "Transit")}
+                  {j.destination ? `Journey to ${j.destination}` : (j.modeSummary || "Journey")}
                 </span>
+                {j.destination && j.modeSummary && (
+                  <span className="journey-item-via">{j.modeSummary}</span>
+                )}
                 <span className="journey-item-date">
                   {new Date(j.timestamp).toLocaleDateString("en-IE", {
                     weekday: "short", day: "numeric", month: "short"

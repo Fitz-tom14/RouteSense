@@ -30,3 +30,8 @@ pnpm-debug.log*
 
 backend/src/main/resources/gtfs/google_transit.zip/stop_times.txt
 backend/src/main/resources/gtfs/google_transit.zip/shapes.txt
+
+# H2 embedded database files
+backend/data/
+*.mv.db
+*.trace.db

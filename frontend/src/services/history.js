@@ -1,14 +1,20 @@
-// history.js - saves and retrieves journey history from localStorage.
+// history.js - saves and retrieves journey history from the backend database.
 // Each entry captures the key metrics needed for the History dashboard.
 
-const STORAGE_KEY = "routesense_history";
+const API_BASE = "http://localhost:8080";
 
-// Save a completed journey to history.
-// route = the selected public transport option; carCo2Grams = car baseline CO₂.
-export function saveJourney(route, carCo2Grams, destination) {
-  const history = loadHistory();
+// Get the logged-in user's email to scope history per user.
+function getUserId() {
+  try {
+    const auth = localStorage.getItem("routesense_auth");
+    return auth ? JSON.parse(auth).email : "anonymous";
+  } catch {
+    return "anonymous";
+  }
+}
 
-  // Create a new history entry with the relevant data.
+// Save a completed journey to the backend database.
+export async function saveJourney(route, carCo2Grams, destination) {
   const entry = {
     timestamp: Date.now(),
     date: new Date().toISOString().split("T")[0], // "YYYY-MM-DD"
@@ -18,17 +24,22 @@ export function saveJourney(route, carCo2Grams, destination) {
     modeSummary: route.modeSummary || "Transit",
     destination: destination || "",
     transfers: route.legs ? route.legs.filter(l => l.mode !== "WALK").length - 1 : 0,
+    userId: getUserId(),
   };
 
-  // Append the new entry to history and save back to localStorage.
-  history.push(entry);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  await fetch(`${API_BASE}/api/history`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
 }
 
-// Load all journey history entries from localStorage.
-export function loadHistory() {
+// Load all journey history for the current user from the backend.
+export async function loadHistory() {
+  const userId = getUserId();
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    const res = await fetch(`${API_BASE}/api/history?userId=${encodeURIComponent(userId)}`);
+    return res.ok ? await res.json() : [];
   } catch {
     return [];
   }
