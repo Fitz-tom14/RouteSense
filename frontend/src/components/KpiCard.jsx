@@ -1,3 +1,4 @@
+// A simple card component to display a key performance indicator (KPI) with a title, subtitle, value, and unit.
 function KpiCard({ title, subtitle, value, unit }) {
   return (
     <div className="card kpi-card">

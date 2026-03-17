@@ -1,4 +1,3 @@
-// SummaryCard.jsx -
 // React component to display a summary of the selected journey, comparing the CO₂ emissions of the public transport route to a baseline car journey. Shows a simple bar chart and percentage saved.
 function formatCo2(grams) {
   const g = Math.max(0, grams || 0);

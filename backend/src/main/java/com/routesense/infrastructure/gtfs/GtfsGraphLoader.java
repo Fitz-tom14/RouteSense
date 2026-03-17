@@ -38,9 +38,9 @@ public class GtfsGraphLoader {
     private static final double WALK_SPEED_KMH             = 4.8;  // walking speed used to compute footpath travel time
     private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class);
 
-    private Map<String, Stop> stops = Map.of();
-    private Map<String, List<StopEdge>> adjacencyList = Map.of();
-    private Map<String, List<ScheduledConnection>> scheduleByStop = Map.of();
+    private Map<String, Stop> stops = Map.of();// stopId → Stop
+    private Map<String, List<StopEdge>> adjacencyList = Map.of();// stopId → list of outgoing edges (sorted by toStopId for deterministic iteration order)
+    private Map<String, List<ScheduledConnection>> scheduleByStop = Map.of();// stopId → list of departing connections (sorted by departure time)
     private Map<String, String> routeShortNames = Map.of(); // routeId → shortName (e.g. "405", "DART")
     private Map<String, List<double[]>> routeShapes = Map.of(); // routeId → ordered [lat,lon] shape points (train routes only)
     private Map<String, List<FootpathEdge>> footpaths = Map.of(); // stopId → nearby stops reachable on foot
@@ -517,7 +517,7 @@ public class GtfsGraphLoader {
                         if (distKm <= MAX_FOOTPATH_DISTANCE_KM) {
                             int walkSecs = (int) Math.round((distKm / WALK_SPEED_KMH) * 3600);
                             footpaths.computeIfAbsent(stop.getId(), k -> new ArrayList<>())
-                                     .add(new FootpathEdge(other.getId(), walkSecs));
+                            .add(new FootpathEdge(other.getId(), walkSecs));
                         }
                     }
                 }
@@ -615,7 +615,7 @@ public class GtfsGraphLoader {
 
     private record StopTimeRow(String stopId, int sequence, int arrivalSeconds) {}
 
-  
+
     // Helper class to aggregate edge stats while processing trips.txt. We keep track of total travel time, sample count, and mode counts for each stop-pair + route combination.
     // This allows us to compute an average travel time and dominant mode for each edge in the adjacency list, which improves routing accuracy and provides better default times for edges without schedule data.
     private static class StopEdgeStats {

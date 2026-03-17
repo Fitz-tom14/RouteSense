@@ -61,7 +61,9 @@ public class SearchJourneyUseCase {
     private final EmissionsCalculator      emissionsCalculator;
     private final OpenRouteServiceClient   openRouteServiceClient;
 
-    
+    // Constructor injection of dependencies
+    // The StopGraphRepository provides access to the transit network graph, including stops, routes, schedules, and footpaths.
+    // The EmissionsCalculator is used to estimate CO2 emissions for different legs and modes.
     public SearchJourneyUseCase(
             StopGraphRepository    stopGraphRepository,
             EmissionsCalculator    emissionsCalculator,
@@ -84,14 +86,14 @@ public class SearchJourneyUseCase {
             Integer departureTimeSeconds,
             Integer arriveBySeconds
     ) {
-        Map<String, Stop>                      stops          = stopGraphRepository.getStops();
-        Map<String, List<StopEdge>>            adjacencyList  = stopGraphRepository.getAdjacencyList();
-        Map<String, List<ScheduledConnection>> schedule       = stopGraphRepository.getSchedule();
-        Map<String, String>                    routeShortNames = stopGraphRepository.getRouteShortNames();
-        Map<String, List<double[]>>            routeShapes    = stopGraphRepository.getRouteShapes();
-        Map<String, List<FootpathEdge>>        footpaths      = stopGraphRepository.getFootpaths();
+        Map<String, Stop>                      stops          = stopGraphRepository.getStops();// for stop details and coordinates
+        Map<String, List<StopEdge>>            adjacencyList  = stopGraphRepository.getAdjacencyList();// for Dijkstra and nearby stop search
+        Map<String, List<ScheduledConnection>> schedule       = stopGraphRepository.getSchedule();// for schedule-aware Dijkstra
+        Map<String, String>                    routeShortNames = stopGraphRepository.getRouteShortNames();// for display purposes only, not needed for routing logic
+        Map<String, List<double[]>>            routeShapes    = stopGraphRepository.getRouteShapes();// for map display of routes
+        Map<String, List<FootpathEdge>>        footpaths      = stopGraphRepository.getFootpaths();// for walking transfers between nearby stops
 
-        // --- Resolve destination candidates ---
+        //Resolve destination candidates
         // Build a list of destination stop IDs to try. When coordinates are given we try:
         //   1. The nearest scheduled stop within 600 m (a nearby bus stop the user might mean)
         //   2. The nearest TRAIN station within 20 km (covers rural Ireland where no bus stop
@@ -136,6 +138,7 @@ public class SearchJourneyUseCase {
         if (destCandidates.isEmpty()) {
             return new JourneySearchResult(List.of(), 0.0);
         }
+
         // Primary destination for guard checks and car baseline
         destinationStopId = destCandidates.get(0);
         LOGGER.info("DEBUG dest candidates: {}, origin coords: {},{}", destCandidates, destinationLat, destinationLon);
@@ -151,7 +154,7 @@ public class SearchJourneyUseCase {
                     : LocalTime.now().toSecondOfDay();
         }
 
-        // --- Resolve effective origin(s) ---
+        //Resolve effective origin(s)
         // When the user drops a map pin, consider ALL stops within 600 m as potential origins
         // (not just the single nearest). This is essential because two stops at the same
         // location can serve opposite directions — e.g. the eastbound and westbound Gleann Dara
@@ -191,6 +194,7 @@ public class SearchJourneyUseCase {
                 }
             }
 
+            // If we found no nearby stops, return empty result immediately to avoid running expensive Dijkstra searches with invalid origin/destination.
             originCandidates = candidates;
             if (originCandidates.isEmpty()) {
                 return new JourneySearchResult(List.of(), 0.0);
@@ -1074,6 +1078,7 @@ public class SearchJourneyUseCase {
             if (nearest == null || distKm < nearest.distanceKm()) {
                 nearest = new StopDistance(stopId, distKm);
             }
+
         }
         return nearest;
     }

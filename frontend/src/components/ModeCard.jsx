@@ -1,4 +1,3 @@
-// ModeCard.jsx -
 // React component to display the transport modes used in the selected route, showing the count of legs for each mode. Uses emojis for visual representation of modes.
 const MODE_ICONS = { Bus: '🚌', Train: '🚆', Walk: '🚶', Bike: '🚲' };
 
