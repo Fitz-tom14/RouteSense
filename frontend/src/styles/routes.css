@@ -1,7 +1,10 @@
 .routes-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #f5f5f5;
   padding: 16px;
-  padding-bottom: 90px; /* space for bottom nav */
-  background: radial-gradient(circle at top, #f5f8ff 0%, #f2f6f3 50%, #f7f7fb 100%);
+  padding-bottom: 70px;
 }
 
 .routes-header {
@@ -13,9 +16,9 @@
 
 .routes-title {
   margin: 0;
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.2px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1a1a1a;
 }
 
 .routes-subtitle {
@@ -139,9 +142,58 @@
 .route-card {
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(20, 30, 60, 0.08);
+  border-left: 4px solid transparent;
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 10px 28px rgba(15, 30, 60, 0.06);
+}
+
+/* Coloured dot in route card header showing which map line this card belongs to */
+.route-map-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Map legend below the route map */
+.map-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #5f6b7a;
+  border-top: 1px solid rgba(20, 30, 60, 0.06);
+}
+
+.map-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.map-legend-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.map-legend-walk {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  background: repeating-linear-gradient(
+    to right,
+    #6b7788 0px,
+    #6b7788 5px,
+    transparent 5px,
+    transparent 10px
+  );
+  flex-shrink: 0;
 }
 
 .route-card.recommended {

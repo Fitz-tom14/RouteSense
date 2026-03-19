@@ -58,7 +58,8 @@ function StopMarker({ stop, live }) {
         {!loading && departures && departures.map((d, i) => (
           <div key={i} className="popup-departure-row">
             <span className="popup-route-name">{d.routeName}</span>
-            <span className="popup-minutes">{d.minutes} min</span>
+            <span className="popup-dep-time">{d.scheduledTime}</span>
+            <span className="popup-minutes">{d.minutes === 0 ? "Due" : `${d.minutes} min`}</span>
           </div>
         ))}
       </Popup>
@@ -70,7 +71,7 @@ function StopMarker({ stop, live }) {
 // It includes a top bar for location selection, a filter panel for transport modes and live/static toggle, and a bottom navigation for switching between pages. The map shows stops as colored markers, and clicking on a marker opens a popup with stop details and upcoming departures.
 function MapPage({ activePage, onNavigate }) {
   const [location, setLocation]           = useState("Galway");
-  const [live, setLive]                   = useState(true);
+  const live = true;
   const [selectedModes, setSelectedModes] = useState(["BUS"]);
   const [stops, setStops]                 = useState([]);
   const [loadingStops, setLoadingStops]   = useState(false);
@@ -114,8 +115,6 @@ function MapPage({ activePage, onNavigate }) {
         <FilterPanel
           selectedModes={selectedModes}
           onChangeModes={setSelectedModes}
-          live={live}
-          onChangeLive={setLive}
         />
 
         <div className="map-wrapper">

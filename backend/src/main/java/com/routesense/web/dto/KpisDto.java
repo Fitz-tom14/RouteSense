@@ -1,8 +1,8 @@
 package com.routesense.web.dto;
 
-/**
- * DTO representing KPI values shown on the Home page.
- */
+
+//DTO representing KPI values shown on the Home page.
+
 
 public class KpisDto {
     private String avgJourneyTimeText;

@@ -7,7 +7,7 @@ import java.util.List;
 public class JourneySearchResponseDto {
     private List<JourneyOptionDto> options;
     private double                 carBaselineCo2Grams;
-    /** Road-following polyline for the car baseline: [[lat,lon],...]. Null if ORS unavailable. */
+    // Road-following polyline for the car baseline: [[lat,lon],...]. Null if ORS unavailable. 
     private List<List<Double>>     carRouteGeometry;
 
     public JourneySearchResponseDto() {}

@@ -39,9 +39,9 @@ public class SearchJourneyUseCase {
     private static final Logger LOGGER = LoggerFactory.getLogger(SearchJourneyUseCase.class);
 
     // Scoring weights for the recommendation engine
-    private static final double TIME_WEIGHT      = 0.55;
+    private static final double TIME_WEIGHT = 0.55;
     private static final double TRANSFERS_WEIGHT = 0.25;
-    private static final double CO2_WEIGHT       = 0.20;
+    private static final double CO2_WEIGHT = 0.20;
 
     // 1-hour penalty per extra transfer in the fewest-transfers Dijkstra variant
     private static final int TRANSFER_SCORE_PENALTY = 3600;
@@ -52,9 +52,9 @@ public class SearchJourneyUseCase {
 
     // Fallback Dijkstra constants (used only when schedule data is empty)
     private static final int    BALANCED_TRANSFER_PENALTY_SECONDS = 300;
-    private static final double WALK_SPEED_KMH                    = 4.8;
-    private static final int    ROUTING_CANDIDATE_LIMIT            = 8;
-    private static final double ROUTING_CANDIDATE_RADIUS_KM        = 20.0;
+    private static final double WALK_SPEED_KMH = 4.8;
+    private static final int    ROUTING_CANDIDATE_LIMIT = 8;
+    private static final double ROUTING_CANDIDATE_RADIUS_KM= 20.0;
 
     
     private final StopGraphRepository      stopGraphRepository;
@@ -65,9 +65,9 @@ public class SearchJourneyUseCase {
     // The StopGraphRepository provides access to the transit network graph, including stops, routes, schedules, and footpaths.
     // The EmissionsCalculator is used to estimate CO2 emissions for different legs and modes.
     public SearchJourneyUseCase(
-            StopGraphRepository    stopGraphRepository,
-            EmissionsCalculator    emissionsCalculator,
-            OpenRouteServiceClient openRouteServiceClient
+            StopGraphRepository    stopGraphRepository, //dependency on the stop graph repository to access transit data
+            EmissionsCalculator    emissionsCalculator, //dependency on the emissions calculator to estimate CO2 emissions for journey options
+            OpenRouteServiceClient openRouteServiceClient//dependency on the OpenRouteService client to build a car baseline option for comparison with public transit routes
     ) {
         this.stopGraphRepository    = stopGraphRepository;
         this.emissionsCalculator    = emissionsCalculator;
@@ -217,6 +217,8 @@ public class SearchJourneyUseCase {
             return new JourneySearchResult(List.of(), 0.0);
         }
 
+        //Dijkstra with schedule data to find real departure times and accurate walking durations to/from stops.
+        //This is the core of the routing logic and generates the best possible public transit options for recommendation.
         //Find public transport options
         List<JourneyOption> optionsToScore = new ArrayList<>();
         Set<String>         seenSignatures = new HashSet<>();
@@ -290,12 +292,15 @@ public class SearchJourneyUseCase {
         double originLatForCar = originLat  != null ? originLat  : stops.get(effectiveOriginStopId).getLatitude();
         double originLonForCar = originLon  != null ? originLon  : stops.get(effectiveOriginStopId).getLongitude();
         Stop   destination     = stops.get(destinationStopId);
+        // Use the exact destination pin if the user dropped one; otherwise fall back to the transit stop coords.
+        double destLatForCar   = destinationLat != null ? destinationLat : (destination != null ? destination.getLatitude()  : 0);
+        double destLonForCar   = destinationLon != null ? destinationLon : (destination != null ? destination.getLongitude() : 0);
 
-        // If we have a valid destination stop, try to build a car baseline.  If the ORS call fails, the fallback is a JourneyOption with infinite duration and zero CO2 which will never be recommended.
+        // If we have a valid destination, try to build a car baseline.  If the ORS call fails, the fallback is a JourneyOption with infinite duration and zero CO2 which will never be recommended.
         JourneyOption    carBaseline     = null;
         List<List<Double>> carGeometry  = null;
         if (destination != null) {
-            CarBaselineResult cbr = buildCarBaseline(originLatForCar, originLonForCar, destination);
+            CarBaselineResult cbr = buildCarBaseline(originLatForCar, originLonForCar, destLatForCar, destLonForCar);
             carBaseline = cbr.option();
             carGeometry = cbr.geometry();
         }
@@ -410,7 +415,7 @@ public class SearchJourneyUseCase {
                 // The very first boarding (routeId == null) is not counted as a transfer.
                 boolean isTransfer  = current.routeId() != null && !conn.getRouteId().equals(current.routeId());
                 int     newTransfers = current.transfers() + (isTransfer ? 1 : 0);
-                int     newScore     = conn.getArrivalTimeSeconds() + newTransfers * transferPenaltySeconds;
+                int     newScore     = conn.getArrivalTimeSeconds() + newTransfers * transferPenaltySeconds; // the Dijkstra score is arrival time plus a penalty for transfers, so it finds the fastest route when transferPenaltySeconds is low (e.g. 10 min) and the fewest-transfer route when it is high (e.g. 1 hour)
 
                 String nextKey = stateKey(conn.getToStopId(), conn.getRouteId());
                 if (newScore < bestScore.getOrDefault(nextKey, Integer.MAX_VALUE)) {
@@ -561,6 +566,7 @@ public class SearchJourneyUseCase {
             return;
         }
 
+        //Train name display and buses
         // Build per-leg detail (service name, times) for display on the route card
         List<JourneyLeg> journeyLegs = new ArrayList<>();
         for (PathLeg leg : path.legs()) {
@@ -597,6 +603,7 @@ public class SearchJourneyUseCase {
             ));
         }
 
+        //final possible walk to destination 
         // If the path terminated at a nearby stop rather than the exact destination, add a short
         // walk leg so the user sees "→ Galway (Ceannt)" rather than "→ Saint Francis Street".
         int finalWalkSeconds = 0;
@@ -627,10 +634,12 @@ public class SearchJourneyUseCase {
             }
         }
 
-        double co2Grams    = calculateCo2ForLegs(path.legs(), stops);
-        int    duration    = Math.max(60, path.totalDurationSeconds() + extraOriginWalkSeconds + finalWalkSeconds);
-        String modeSummary = buildModeSummaryFromLegs(path.legs(), extraOriginWalkSeconds > 0);
+        double co2Grams    = calculateCo2ForLegs(path.legs(), stops); // calculate CO2 based on the actual legs taken, ignoring the final walk to the destination which is typically very short and doesn't materially affect emissions
+        int    duration    = Math.max(60, path.totalDurationSeconds() + extraOriginWalkSeconds + finalWalkSeconds); // minimum 1 minute to avoid zero-duration routes which break the UI
+        String modeSummary = buildModeSummaryFromLegs(path.legs(), extraOriginWalkSeconds > 0); // build a user-friendly mode summary like "Walk → Bus 405 → Train" from the leg sequence. Intermediate footpath walk legs are skipped — they are short transfers, not main modes. Only the initial walk to the first stop is included (walkAtStart flag).
 
+        // Add the option to the target list if it's not a duplicate.
+        // The target list will be scored and sorted later, so we don't need to worry about that here.
         target.add(new JourneyOption(
                 JourneyOptionType.PUBLIC_TRANSPORT,
                 List.copyOf(stopList),
@@ -659,7 +668,7 @@ public class SearchJourneyUseCase {
             Stop from = stops.get(leg.fromStopId());
             Stop to   = stops.get(leg.toStopId());
             if (from == null || to == null) continue;
-            double distKm = emissionsCalculator.haversineDistanceKm(
+            double distKm = emissionsCalculator.haversineDistanceKm( // use haversine distance for emissions calculation as it's more accurate for short urban trips than the road distance from ORS, and we don't want to overestimate the bus emissions by using a long car route distance
                     from.getLatitude(), from.getLongitude(),
                     to.getLatitude(),   to.getLongitude());
             total += emissionsCalculator.estimateEdgeCo2Grams(distKm, leg.mode());
@@ -694,23 +703,22 @@ public class SearchJourneyUseCase {
    // The car baseline is used to provide context to the user — if the recommended bus route takes 45 minutes but the car baseline is 15 minutes,
    // the user understands that the bus is slower but may still prefer it for cost or environmental reasons.
    // If the car baseline is close to or worse than the bus options, that strengthens the recommendation for public transport.
-    private CarBaselineResult buildCarBaseline(double originLat, double originLon, Stop destination) {
+    private CarBaselineResult buildCarBaseline(double originLat, double originLon, double destLat, double destLon) {
         double distanceKm;
         int    durationSeconds;
         List<List<Double>> geometry = null;
 
         OpenRouteServiceClient.CarRoute orsRoute = openRouteServiceClient
-                .getDrivingRoute(originLat, originLon, destination.getLatitude(), destination.getLongitude())
+                .getDrivingRoute(originLat, originLon, destLat, destLon)
                 .orElse(null);
 
         if (orsRoute != null) {
             distanceKm      = orsRoute.distanceKm();
             durationSeconds = orsRoute.durationSeconds();
-            geometry        = orsRoute.geometry(); // road-following polyline from ORS
+            geometry        = orsRoute.geometry();
         } else {
             // Haversine fallback: straight-line * 1.25 to approximate road distance
-            double straightKm = emissionsCalculator.haversineDistanceKm(
-                    originLat, originLon, destination.getLatitude(), destination.getLongitude());
+            double straightKm = emissionsCalculator.haversineDistanceKm(originLat, originLon, destLat, destLon);
             distanceKm     = straightKm * 1.25;
             double speedKmh = distanceKm <= 15.0 ? 35.0 : 75.0;
             durationSeconds = (int) Math.round((distanceKm / speedKmh) * 3600.0);
@@ -718,10 +726,11 @@ public class SearchJourneyUseCase {
 
         double co2Grams      = emissionsCalculator.estimateCarCo2Grams(distanceKm);
         Stop   virtualOrigin = new Stop("custom-location", "Your Location", originLat, originLon);
+        Stop   virtualDest   = new Stop("custom-destination", "Your Destination", destLat, destLon);
 
         JourneyOption option = new JourneyOption(
                 JourneyOptionType.CAR_BASELINE,
-                List.of(virtualOrigin, destination),
+                List.of(virtualOrigin, virtualDest),
                 Math.max(0, durationSeconds),
                 0,
                 co2Grams,
@@ -758,11 +767,11 @@ public class SearchJourneyUseCase {
         }
 
         PathResult fastest = dijkstra(anchors.routingOriginStopId(), anchors.routingDestinationStopId(),
-                adjacencyList, edge -> edge.getTravelTimeSeconds());
+                adjacencyList, edge -> edge.getTravelTimeSeconds()); // time-based Dijkstra finds the fastest route
         PathResult fewestTransfers = dijkstra(anchors.routingOriginStopId(), anchors.routingDestinationStopId(),
-                adjacencyList, edge -> 1);
+                adjacencyList, edge -> 1);// transfer-based Dijkstra finds the route with the fewest hops (transfers) regardless of time
         PathResult balanced = dijkstra(anchors.routingOriginStopId(), anchors.routingDestinationStopId(),
-                adjacencyList, edge -> edge.getTravelTimeSeconds() + BALANCED_TRANSFER_PENALTY_SECONDS);
+                adjacencyList, edge -> edge.getTravelTimeSeconds() + BALANCED_TRANSFER_PENALTY_SECONDS);// balanced Dijkstra finds a compromise route that is not too much slower than the fastest but has fewer transfers
 
         int totalOriginAccess = anchors.originAccessSeconds() + extraOriginWalkSeconds;
         addPublicTransportOption(optionsToScore, seenSignatures, fastest,        stops, adjacencyList, routeShortNames,
@@ -843,6 +852,7 @@ public class SearchJourneyUseCase {
         return "Best balance of time + transfers + CO2";
     }
 
+    //builds the recomendation options
     // Normalizes a value to a 0.0-1.0 range based on the provided min and max, where 0.0 is best and 1.0 is worst.
     // If all values are the same (min == max), returns 0.0 to avoid division by zero and treat them as equally good.
     private void addPublicTransportOption(
@@ -914,6 +924,7 @@ public class SearchJourneyUseCase {
         ));
     }
 
+    //cals each leg as irs own routes
    // Builds the list of JourneyLegs for display by walking through the path of stop IDs and looking up the corresponding routes and modes from the adjacency list.
    // Consecutive hops on the same route are collapsed into a single leg.
     private List<JourneyLeg> buildLegsFromPath(
@@ -1141,6 +1152,7 @@ public class SearchJourneyUseCase {
         return best;
     }
 
+    //Return a list of near by stops sorted by proximity 
     // Returns all connected stops within maxKm of (lat,lon), sorted nearest-first.
     private List<StopDistance> findNearbyStops(
             double lat, double lon, double maxKm,

@@ -17,8 +17,6 @@ L.Icon.Default.mergeOptions({
 });
 
 const BACKEND = "http://localhost:8080";
-
-// const BACKEND = "https://api.routesense.com";
 function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
   const [originText, setOriginText] = useState("");
   const [destinationText, setDestinationText] = useState("");
@@ -232,7 +230,7 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
       if (data?.carRouteGeometry && Array.isArray(data.carRouteGeometry)) {
         setCarGeometry(data.carRouteGeometry);
       } else if (carOption) {
-        fetchOsrmGeometry(carOption.stops).then(setCarGeometry);
+        fetchOsrmGeometry(carOption.stops, "car").then(setCarGeometry);
       }
 
       // Fetch road-following geometry from OSRM for PT routes (non-blocking)
@@ -336,6 +334,7 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
                   key={`${route.durationSeconds}-${route.transfers}-${index}`}
                   route={route}
                   carBaselineCo2Grams={carBaselineCo2Grams}
+                  mapColor={MAP_ROUTE_COLORS[index] ?? null}
                   onSelect={onSelectJourney ? (r) => {
                     const lastLeg = r.legs?.findLast?.(l => l.mode !== "Walk") ?? r.legs?.[r.legs.length - 1];
                     const dest = destinationText || destinationStop?.name || lastLeg?.toStopName;
@@ -378,6 +377,31 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
                 routeLines={buildRouteLines(publicRoutes, carBaseline, routeGeometries, carGeometry, originPin, walkGeometries, destinationPin)}
               />
             </div>
+            {hasSearched && publicRoutes.length > 0 && (
+              <div className="map-legend">
+                <span className="map-legend-item">
+                  <span className="map-legend-dot" style={{ background: "#22c55e" }} /> Best
+                </span>
+                {publicRoutes.length > 1 && (
+                  <span className="map-legend-item">
+                    <span className="map-legend-dot" style={{ background: "#eab308" }} /> 2nd
+                  </span>
+                )}
+                {publicRoutes.length > 2 && (
+                  <span className="map-legend-item">
+                    <span className="map-legend-dot" style={{ background: "#ef4444" }} /> 3rd
+                  </span>
+                )}
+                {carBaseline && (
+                  <span className="map-legend-item">
+                    <span className="map-legend-dot" style={{ background: "#3b82f6" }} /> Car
+                  </span>
+                )}
+                <span className="map-legend-item">
+                  <span className="map-legend-walk" /> Walking
+                </span>
+              </div>
+            )}
             <div className="pin-info-row">
               {originPin ? (
                 <div className="pin-info">
@@ -414,7 +438,8 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
 
 // OriginPickerMap component renders a Leaflet map that allows users to pick origin and destination points by clicking on the map.
 // It displays markers for the selected origin and destination pins, and draws polylines for the public transport routes and car baseline if available. The map view automatically fits to show all relevant points and routes when they change.
-async function fetchOsrmGeometry(stops) {
+// profile: "foot" for bus/transit routes, "car" for the car baseline
+async function fetchOsrmGeometry(stops, profile = "foot") {
   const valid = (stops || []).filter((s) => s.latitude != null && s.longitude != null);
   if (valid.length < 2) return null;
 
@@ -425,9 +450,10 @@ async function fetchOsrmGeometry(stops) {
   })();
 
   const coords = sampled.map((s) => `${s.longitude},${s.latitude}`).join(";");
+  const service = profile === "car" ? "routed-car/route/v1/driving" : "routed-foot/route/v1/foot";
   try {
     const res = await fetch(
-      `https://routing.openstreetmap.de/routed-car/route/v1/driving/${coords}?geometries=geojson&overview=full`,
+      `https://routing.openstreetmap.de/${service}/${coords}?geometries=geojson&overview=full`,
       { signal: AbortSignal.timeout(10000) }
     );
     if (!res.ok) return null;
@@ -441,22 +467,27 @@ async function fetchOsrmGeometry(stops) {
   return null;
 }
 
-// Extracts the bus stops from a route, excluding the final stop if the last leg is a walk (since that stop is just a walking destination, not a transit stop).
+// Returns only the stops that are boarding/alighting points of transit (non-Walk) legs.
+// Skipping footpath walk-leg stops prevents OSRM from routing through transfer stops
+// that may be in the wrong direction, which would cause the route to appear to go backwards.
+// stops[i] is the from-stop of legs[i], and to-stop of legs[i-1].
 function getBusStops(route) {
   const legs = route.legs || [];
   const stops = route.stops || [];
-  const lastLeg = legs[legs.length - 1];
-  if (lastLeg && lastLeg.mode === "Walk" && stops.length > 1) {
-    return stops.slice(0, stops.length - 1);
-  }
-  return stops;
+
+  const transitIndices = new Set();
+  legs.forEach((leg, i) => {
+    if (leg.mode !== "Walk") {
+      transitIndices.add(i);
+      transitIndices.add(i + 1);
+    }
+  });
+
+  if (transitIndices.size === 0) return stops;
+  const result = stops.filter((_, i) => transitIndices.has(i));
+  return result.length >= 2 ? result : stops;
 }
 
-// Determines if a route consists of only train legs (and possibly walk legs), which affects how we fetch geometry for the route since train routes may not follow roads and thus require different handling for accurate mapping.
-function isTrainOnlyRoute(route) {
-  const transitLegs = (route.legs || []).filter((l) => l.mode !== "Walk");
-  return transitLegs.length > 0 && transitLegs.every((l) => l.mode === "Train");
-}
 
 // For each public transport route, this function fetches road-following geometries from OSRM for the transit legs.
 // It handles different cases for where to get the geometry based on the presence of GTFS shape points and whether the route is train-only, falling back to straight lines between stops if necessary.
@@ -475,13 +506,6 @@ async function fetchAllOsrmGeometries(routes) {
         points.push(...leg.shapePoints.map((p) => [p[0], p[1]]));
       }
       return Promise.resolve(points.length >= 2 ? points : null);
-    }
-
-    if (isTrainOnlyRoute(r)) {
-      // Fallback: straight lines between stops
-      const stops = getBusStops(r);
-      const valid = stops.filter((s) => s.latitude != null && s.longitude != null);
-      return Promise.resolve(valid.length >= 2 ? valid.map((s) => [s.latitude, s.longitude]) : null);
     }
 
     return fetchOsrmGeometry(getBusStops(r));
@@ -555,44 +579,40 @@ async function fetchAllWalkGeometries(routes, pinLat, pinLng, destPinLat, destPi
   }));
 }
 
-// Builds an array of route lines to be rendered on the map, including the main transit routes (with different colors for recommended vs non-recommended routes), 
-// and the walk legs (origin pin → first stop, last stop → destination leg, last stop → destination pin) with a distinct style.
-// This function consolidates all the geometry information for the routes into a format that can be easily rendered on the map with appropriate styling.
+// Top 3 map colors: green = best, yellow = 2nd, red = 3rd. Blue = car baseline.
+const MAP_ROUTE_COLORS = ["#22c55e", "#eab308", "#ef4444"];
+
+// Builds an array of route lines to be rendered on the map.
+// Only the top 3 public transport routes are shown (green/yellow/red) plus the car baseline (blue).
+// Walk legs are drawn as dashed grey lines for all 3 shown routes.
 function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry = null, originPin = null, walkGeometries = [], destinationPin = null) {
   const lines = [];
-  // Non-recommended routes get amber → red → purple; never green (green = recommended only).
-  const nonRecColors = ["#f59e0b", "#ef4444", "#8b5cf6"];
-  const WALK_COLOR   = "#6b7788";
-  const WALK_DASH    = "8 8";
+  const WALK_COLOR = "#6b7788";
+  const WALK_DASH  = "8 8";
 
-  // Draw non-recommended routes first so the recommended one renders on top.
-  const drawOrder = [
-    ...publicRoutes.map((r, i) => ({ route: r, index: i })).filter(({ route }) => !route.recommended),
-    ...publicRoutes.map((r, i) => ({ route: r, index: i })).filter(({ route }) => route.recommended),
-  ];
-  let nonRecIdx = 0;
-
-  drawOrder.forEach(({ route, index }) => {
+  // Only draw the top 3 routes; draw in reverse so green (index 0) renders on top.
+  const topRoutes = publicRoutes.slice(0, 3);
+  [...topRoutes.map((r, i) => ({ route: r, index: i }))].reverse().forEach(({ route, index }) => {
     const allStops    = route.stops || [];
     const legs        = route.legs  || [];
     const lastLeg     = legs[legs.length - 1];
     const hasDestWalk = lastLeg && lastLeg.mode === "Walk" && allStops.length >= 2;
 
-    // Bus portion 
-    const busStops  = hasDestWalk ? allStops.slice(0, allStops.length - 1) : allStops;
-    const fallback  = busStops
+    const busStops = hasDestWalk ? allStops.slice(0, allStops.length - 1) : allStops;
+    const fallback = busStops
       .filter((s) => s.latitude != null && s.longitude != null)
       .map((s) => [s.latitude, s.longitude]);
     const positions  = geometries[index] || fallback;
-    const routeColor = route.recommended ? "#22c55e" : (nonRecColors[nonRecIdx++] || "#ef4444");
+    const routeColor = MAP_ROUTE_COLORS[index];
+    const weight     = index === 0 ? 6 : 4;
 
     if (positions.length >= 2) {
-      lines.push({ positions, color: routeColor, weight: route.recommended ? 6 : 4 });
+      lines.push({ positions, color: routeColor, weight });
     }
 
     const wg = walkGeometries[index] || {};
 
-    // Walk: origin pin → first bus stop 
+    // Walk: origin pin → first bus stop
     if (originPin && busStops.length > 0) {
       const first = busStops[0];
       if (first.latitude != null && first.longitude != null) {
@@ -602,7 +622,7 @@ function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry
       }
     }
 
-    // Walk: last bus stop → destination stop (backend walk leg) 
+    // Walk: last bus stop → destination stop (backend walk leg)
     if (hasDestWalk) {
       const walkFrom = allStops[allStops.length - 2];
       const walkTo   = allStops[allStops.length - 1];
@@ -613,7 +633,7 @@ function buildRouteLines(publicRoutes, carBaseline, geometries = [], carGeometry
       }
     }
 
-    // Walk: last stop → destination pin 
+    // Walk: last stop → destination pin
     if (destinationPin && allStops.length > 0) {
       const lastStop = allStops[allStops.length - 1];
       if (lastStop?.latitude != null) {
@@ -747,7 +767,7 @@ function StopAutocomplete({
   );
 }
 
-function RouteCard({ route, carBaselineCo2Grams, onSelect }) {
+function RouteCard({ route, carBaselineCo2Grams, onSelect, mapColor }) {
   const durationSeconds = route.durationSeconds ?? route.totalDurationSeconds ?? 0;
   const durationMinutes = secondsToMins(durationSeconds);
   const co2Grams        = route.co2Grams || 0;
@@ -756,10 +776,14 @@ function RouteCard({ route, carBaselineCo2Grams, onSelect }) {
   const allStops        = route.stops || [];
 
   return (
-    <div className={`route-card ${route.recommended ? "recommended" : ""}`}>
+    <div
+      className={`route-card ${route.recommended ? "recommended" : ""}`}
+      style={mapColor ? { borderLeftColor: mapColor, borderLeftWidth: 4 } : {}}
+    >
       {/* Header row: badge + key metrics */}
       <div className="route-header">
         <div className="route-header-left">
+          {mapColor && <span className="route-map-dot" style={{ background: mapColor }} />}
           {route.recommended
             ? <span className="badge">★ Recommended</span>
             : <span className="badge badge-secondary">Option</span>

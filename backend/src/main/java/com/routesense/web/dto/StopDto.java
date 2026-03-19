@@ -1,8 +1,8 @@
 package com.routesense.web.dto;
 
-/**
- * DTO for stop coordinates in a route polyline.
- */
+
+//DTO for stop coordinates in a route polyline.
+
 public class StopDto {
     private String id;
     private String name;

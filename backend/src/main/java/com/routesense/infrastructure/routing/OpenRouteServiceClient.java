@@ -30,22 +30,26 @@ public class OpenRouteServiceClient {
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // Calls the ORS API to get a driving route between the origin and destination coordinates.
+    // Calls the ORS API to get the fastest driving route between the origin and destination coordinates.
+    // Uses the POST endpoint with "preference": "fastest" so the result reflects the quickest road route
+    // rather than the default "recommended" balance of distance and time.
     // Returns an Optional<CarRoute> which contains the distance, duration, and geometry of the route if successful, or empty if there was an error or if the API key is not configured.
-    public Optional<CarRoute> getDrivingRoute(double originLat, double originLon,double destLat, double destLon) {
+    public Optional<CarRoute> getDrivingRoute(double originLat, double originLon, double destLat, double destLon) {
         if (apiKey == null || apiKey.isBlank()) {
             return Optional.empty();
         }
 
         try {
-            // ORS expects coordinates as "longitude,latitude" (note: lon before lat)
-            String url = String.format(Locale.US, "%s?api_key=%s&start=%f,%f&end=%f,%f",
-                    ORS_URL, apiKey, originLon, originLat, destLon, destLat);
+            String body = String.format(Locale.US,
+                    "{\"coordinates\":[[%f,%f],[%f,%f]],\"preference\":\"fastest\",\"geometry\":true}",
+                    originLon, originLat, destLon, destLat);
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Accept", "application/json")
-                    .GET()
+                    .uri(URI.create(ORS_URL))
+                    .header("Accept", "application/json, application/geo+json")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", apiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -97,9 +101,9 @@ public class OpenRouteServiceClient {
         }
     }
 
-    /**
-     * The result of a successful driving route lookup.
-     * geometry is a list of [lat, lon] pairs ready for Leaflet, or null if unavailable.
-     */
+    
+     //The result of a successful driving route lookup.
+     //geometry is a list of [lat, lon] pairs ready for Leaflet, or null if unavailable.
+     
     public record CarRoute(int durationSeconds, double distanceKm, List<List<Double>> geometry) {}
 }

@@ -9,7 +9,7 @@ const MODE_COLOR = {
 // - onChangeModes: callback function to update selected modes in parent component
 // - live: boolean indicating whether live schedule is enabled
 // - onChangeLive: callback function to toggle live schedule in parent component
-function FilterPanel({ selectedModes, onChangeModes, live, onChangeLive }) {
+function FilterPanel({ selectedModes, onChangeModes }) {
   const modes = [
     { key: "BUS",   label: "Bus" },
     { key: "TRAIN", label: "Train" },
@@ -48,24 +48,6 @@ function FilterPanel({ selectedModes, onChangeModes, live, onChangeLive }) {
         </div>
       </div>
 
-      {/* Schedule toggle */}
-      <div className="filter-card">
-        <div className="filter-card-title">Schedule</div>
-        <div className="live-toggle">
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={live}
-              onChange={(e) => onChangeLive(e.target.checked)}
-            />
-            <span className="slider" />
-          </label>
-          <span style={{ color: live ? "#1a56db" : "#4a5568", fontWeight: live ? 700 : 500 }}>
-            {live ? "Live" : "Static"}
-          </span>
-        </div>
-      </div>
-
       {/* Legend */}
       <div className="filter-card">
         <div className="filter-card-title">Legend</div>
@@ -77,6 +59,14 @@ function FilterPanel({ selectedModes, onChangeModes, live, onChangeLive }) {
           <span className="legend-dot" style={{ background: "#f59e0b" }} />
           Train station
         </div>
+      </div>
+
+      {/* Tip */}
+      <div className="filter-card">
+        <div className="filter-card-title">How to use</div>
+        <p style={{ fontSize: "12px", color: "#6b7280", lineHeight: "1.5", margin: 0 }}>
+          Tap any stop on the map to see the next 5 scheduled departures.
+        </p>
       </div>
     </aside>
   );

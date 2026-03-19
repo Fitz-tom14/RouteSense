@@ -1,9 +1,9 @@
 package com.routesense.domain.model;
 
-/**
- * Domain model for a transport stop in the routing graph.
- * Contains the stop's ID, name, and geographic coordinates (latitude and longitude).
- */
+
+//Domain model for a transport stop in the routing graph.
+//Contains the stop's ID, name, and geographic coordinates (latitude and longitude).
+
 public class Stop {
     private final String id;
     private final String name;

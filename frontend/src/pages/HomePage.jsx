@@ -28,7 +28,7 @@ function HomePage({ activePage, onNavigate, selectedJourney, carBaselineCo2Grams
   // If a journey is selected and has a recommendation reason, displays that reason in a banner at the top of the insights section. The main content area includes a grid of cards showing the journey time, CO₂ emissions, transport modes used, and a summary comparing it to driving. At the bottom, there's a button to search for another route, which navigates back to the Routes page.
   return (
     <div className="home-page">
-      <TopBar />
+      <TopBar title="Home" />
 
       <main className="main-content">
         {!journey ? (

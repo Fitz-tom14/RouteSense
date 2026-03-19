@@ -7,12 +7,15 @@ package com.routesense.domain.model;
 public class Departure {
     private final String routeName;
     private final int minutesUntilArrival;
+    private final String scheduledTime; // "HH:MM"
 
-    public Departure(String routeName, int minutesUntilArrival) {
+    public Departure(String routeName, int minutesUntilArrival, String scheduledTime) {
         this.routeName = routeName;
         this.minutesUntilArrival = minutesUntilArrival;
+        this.scheduledTime = scheduledTime;
     }
 
     public String getRouteName() { return routeName; }
     public int getMinutesUntilArrival() { return minutesUntilArrival; }
+    public String getScheduledTime() { return scheduledTime; }
 }

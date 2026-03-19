@@ -47,7 +47,7 @@ public class GtfsGraphLoader {
 
     @PostConstruct
     public void loadGraph() {
-        Map<String, Stop> parsedStops = loadStops();
+        Map<String, Stop> parsedStops = loadStops(); // stopID - stops
         LoadedEdgeData edgeData = loadEdges(parsedStops);
 
         this.stops = Collections.unmodifiableMap(parsedStops);

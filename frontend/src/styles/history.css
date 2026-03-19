@@ -270,6 +270,17 @@
   color: #16a34a;
 }
 
+/* Placeholder */
+
+.history-placeholder {
+  text-align: center;
+  padding: 1.5rem;
+  color: #bbb;
+  font-size: 0.9rem;
+  border: 1px dashed #ddd;
+  border-radius: 8px;
+}
+
 /* Empty State */
 
 .history-empty {

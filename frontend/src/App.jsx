@@ -6,10 +6,10 @@ import MapPage from "./pages/MapPage";
 import LoginPage from "./pages/LoginPage";
 import RoutesPage from "./pages/RoutesPage";
 import HistoryPage from "./pages/HistoryPage";
-import { saveJourney } from "./services/history";
 
 // Auth helper
 import { getStoredAuth } from "./services/auth";
+import { saveJourney } from "./services/history";
 
 function App() {
   // Check if user already has a stored session
@@ -29,8 +29,8 @@ function App() {
   function handleSelectJourney(route, carBaselineCo2Grams, destination) {
     setSelectedJourney(route);
     setSelectedJourneyCarCo2(carBaselineCo2Grams);
-    saveJourney(route, carBaselineCo2Grams, destination);
     setActivePage("Home");
+    saveJourney(route, carBaselineCo2Grams, destination);
   }
 
   // After login → mark user as authenticated

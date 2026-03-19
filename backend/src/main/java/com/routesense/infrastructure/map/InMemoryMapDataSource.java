@@ -61,7 +61,7 @@ public class InMemoryMapDataSource implements MapDataSource {
         return result;
     }
 
-    /** Looks at the first outbound edge to determine the stop's transport mode. */
+    // Looks at the first outbound edge to determine the stop's transport mode.
     private TransportMode getModeForStop(String stopId, Map<String, List<StopEdge>> adjacency) {
         List<StopEdge> edges = adjacency.get(stopId);
         if (edges == null || edges.isEmpty()) return TransportMode.BUS;
@@ -88,7 +88,9 @@ public class InMemoryMapDataSource implements MapDataSource {
                     String label = (c.getRouteShortName() != null && !c.getRouteShortName().isBlank())
                             ? c.getRouteShortName()
                             : c.getRouteId();
-                    return new Departure(label, minsUntil);
+                    int totalMins = c.getDepartureTimeSeconds() / 60;
+                    String scheduledTime = String.format("%02d:%02d", (totalMins / 60) % 24, totalMins % 60);
+                    return new Departure(label, minsUntil, scheduledTime);
                 })
                 .collect(Collectors.toList());
     }

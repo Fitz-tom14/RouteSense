@@ -58,7 +58,7 @@ public class MapController {
         List<Departure> departures = getStopDeparturesUseCase.execute(id, live);
 
         return departures.stream()
-                .map(d -> new DepartureDto(d.getRouteName(), d.getMinutesUntilArrival()))
+                .map(d -> new DepartureDto(d.getRouteName(), d.getMinutesUntilArrival(), d.getScheduledTime()))
                 .collect(Collectors.toList());
     }
 
