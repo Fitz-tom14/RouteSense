@@ -17,6 +17,60 @@ L.Icon.Default.mergeOptions({
 });
 
 const BACKEND = "http://localhost:8080";
+
+// Builds the JSON body for the POST /api/journeys/search request.
+// Uses stop IDs when the user typed a stop name, or lat/lng when they dropped a map pin.
+// Also converts the "arrive by" time string to seconds-since-midnight if set.
+function buildSearchRequestBody(originStop, originPin, destinationStop, destinationPin, arriveByTime) {
+  const body = {};
+  if (originStop?.id) {
+    body.originStopId = originStop.id;
+  } else {
+    body.originLat = originPin.lat;
+    body.originLon = originPin.lng;
+  }
+  if (destinationStop?.id) {
+    body.destinationStopId = destinationStop.id;
+  } else {
+    body.destinationLat = destinationPin.lat;
+    body.destinationLon = destinationPin.lng;
+  }
+
+  // If the user set an "arrive by" time, send it directly so the backend can
+  // search from 3 hours before and filter out routes that arrive too late.
+  if (arriveByTime) {
+    const [hours, minutes] = arriveByTime.split(":").map(Number);
+    body.arriveBySeconds = hours * 3600 + minutes * 60;
+  }
+
+  return body;
+}
+
+// Parses the backend journey search response.
+// The backend can return either a plain array or an object with an "options" array.
+// Separates public transport options from the car baseline and extracts the car CO2 figure.
+function parseJourneyResponse(data) {
+  // The backend response can be in two formats: either a simple array of route options, or an object containing an "options" array along with additional metadata like the car baseline CO₂.
+  //  We handle both cases to maintain flexibility in the backend response format.
+  const options = Array.isArray(data) ? data : data?.options;// Normalize the options to an array, defaulting to an empty array if the data is not in the expected format, to avoid errors when rendering the routes list.
+  const normalizedOptions = Array.isArray(options) ? options : [];
+
+  // We separate out the car baseline option from the public transport options based on the "type" field,
+  // which allows us to display them differently in the UI and use the car baseline CO₂ for comparison.
+  const carOption =
+    normalizedOptions.find((option) => option?.type === "CAR_BASELINE") || null;
+  const ptOptions = normalizedOptions.filter(
+    (option) => option?.type !== "CAR_BASELINE"
+  );
+
+  const carBaselineCo2 =
+    typeof data?.carBaselineCo2Grams === "number"
+      ? data.carBaselineCo2Grams
+      : carOption?.co2Grams || 0;
+
+  return { ptOptions, carOption, carBaselineCo2 };
+}
+
 function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
   const [originText, setOriginText] = useState("");
   const [destinationText, setDestinationText] = useState("");
@@ -166,26 +220,7 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
 
     setLoading(true);
     try {
-      const body = {};
-      if (originStop?.id) {
-        body.originStopId = originStop.id;
-      } else {
-        body.originLat = originPin.lat;
-        body.originLon = originPin.lng;
-      }
-      if (destinationStop?.id) {
-        body.destinationStopId = destinationStop.id;
-      } else {
-        body.destinationLat = destinationPin.lat;
-        body.destinationLon = destinationPin.lng;
-      }
-
-      // If the user set an "arrive by" time, send it directly so the backend can
-      // search from 3 hours before and filter out routes that arrive too late.
-      if (arriveByTime) {
-        const [hours, minutes] = arriveByTime.split(":").map(Number);
-        body.arriveBySeconds = hours * 3600 + minutes * 60;
-      }
+      const body = buildSearchRequestBody(originStop, originPin, destinationStop, destinationPin, arriveByTime);
 
       // The backend is expected to return a JSON response containing an array of journey options, each with details like duration, CO₂ emissions, and transport mode, as well as a car baseline option for comparison. We parse the response and update the state with the new routes and baseline data, or show an error message if the request fails.
       const res = await fetch(`${BACKEND}/api/journeys/search`, {
@@ -198,28 +233,12 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      // The backend response can be in two formats: either a simple array of route options, or an object containing an "options" array along with additional metadata like the car baseline CO₂.
-      //  We handle both cases to maintain flexibility in the backend response format.
       const data = await res.json();
-      const options = Array.isArray(data) ? data : data?.options;// Normalize the options to an array, defaulting to an empty array if the data is not in the expected format, to avoid errors when rendering the routes list.
-      const normalizedOptions = Array.isArray(options) ? options : [];
-
-      // We separate out the car baseline option from the public transport options based on the "type" field, 
-      // which allows us to display them differently in the UI and use the car baseline CO₂ for comparison.
-      const carOption =
-        normalizedOptions.find((option) => option?.type === "CAR_BASELINE") || null;
-      const ptOptions = normalizedOptions.filter(
-        (option) => option?.type !== "CAR_BASELINE"
-      );
-
-      const responseCarBaselineCo2 =
-        typeof data?.carBaselineCo2Grams === "number"
-          ? data.carBaselineCo2Grams
-          : carOption?.co2Grams || 0;
+      const { ptOptions, carOption, carBaselineCo2 } = parseJourneyResponse(data);
 
       setPublicRoutes(ptOptions);
       setCarBaseline(carOption);
-      setCarBaselineCo2Grams(responseCarBaselineCo2);
+      setCarBaselineCo2Grams(carBaselineCo2);
       setRouteGeometries([]);
       setCarGeometry(null);
       setWalkGeometries([]);

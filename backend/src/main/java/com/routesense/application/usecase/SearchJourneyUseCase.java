@@ -86,54 +86,18 @@ public class SearchJourneyUseCase {
             Integer departureTimeSeconds,
             Integer arriveBySeconds
     ) {
-        Map<String, Stop>                      stops          = stopGraphRepository.getStops();// for stop details and coordinates
-        Map<String, List<StopEdge>>            adjacencyList  = stopGraphRepository.getAdjacencyList();// for Dijkstra and nearby stop search
-        Map<String, List<ScheduledConnection>> schedule       = stopGraphRepository.getSchedule();// for schedule-aware Dijkstra
-        Map<String, String>                    routeShortNames = stopGraphRepository.getRouteShortNames();// for display purposes only, not needed for routing logic
-        Map<String, List<double[]>>            routeShapes    = stopGraphRepository.getRouteShapes();// for map display of routes
-        Map<String, List<FootpathEdge>>        footpaths      = stopGraphRepository.getFootpaths();// for walking transfers between nearby stops
+        Map<String, Stop>stops= stopGraphRepository.getStops();// for stop details and coordinates
+        Map<String, List<StopEdge>>adjacencyList=stopGraphRepository.getAdjacencyList();// for Dijkstra and nearby stop search
+        Map<String, List<ScheduledConnection>> schedule = stopGraphRepository.getSchedule();// for schedule-aware Dijkstra
+        Map<String, String>routeShortNames = stopGraphRepository.getRouteShortNames();// for display purposes only, not needed for routing logic
+        Map<String, List<double[]>>routeShapes = stopGraphRepository.getRouteShapes();// for map display of routes
+        Map<String, List<FootpathEdge>>footpaths = stopGraphRepository.getFootpaths();// for walking transfers between nearby stops
 
-        //Resolve destination candidates
-        // Build a list of destination stop IDs to try. When coordinates are given we try:
-        //   1. The nearest scheduled stop within 600 m (a nearby bus stop the user might mean)
-        //   2. The nearest TRAIN station within 20 km (covers rural Ireland where no bus stop
-        //      exists near the pin but a train station is within reasonable distance)
-        // Both candidates are tried so a user near a bus stop still gets bus results AND
-        // a user far from any bus stop still gets a train route to the nearest station.
-        List<String> destCandidates = new ArrayList<>();
-        if (destinationLat != null && destinationLon != null && (destinationStopId == null || destinationStopId.isBlank())) {
-            // Nearest scheduled bus stop within 600 m
-            List<StopDistance> nearbyDest = findNearbyStops(destinationLat, destinationLon, 0.6, stops).stream()
-                    .filter(sd -> !schedule.getOrDefault(sd.stopId(), List.of()).isEmpty())
-                    .collect(Collectors.toList());
-            if (!nearbyDest.isEmpty()) {
-                destCandidates.add(nearbyDest.get(0).stopId());
-            }
-
-            // Always also try the nearest train station within 20 km
-            StopDistance nearestTrainDest = findNearestTrainStop(destinationLat, destinationLon, stops, schedule, 20.0);
-            if (nearestTrainDest != null && !destCandidates.contains(nearestTrainDest.stopId())) {
-                destCandidates.add(nearestTrainDest.stopId());
-            }
-
-            // If no stop was found within a walkable distance (bus within 600 m or train within 2 km),
-            // also add the nearest scheduled stop within 20 km. This handles pins in rural areas where
-            // a distant train station was already added but the nearest bus stop is closer and more useful.
-            boolean hasWalkableDest = !nearbyDest.isEmpty() ||
-                    (nearestTrainDest != null && nearestTrainDest.distanceKm() <= 2.0);
-            if (!hasWalkableDest) {
-                List<StopDistance> farDest = findNearbyStops(destinationLat, destinationLon, 20.0, stops).stream()
-                        .filter(sd -> !schedule.getOrDefault(sd.stopId(), List.of()).isEmpty())
-                        .collect(Collectors.toList());
-                if (!farDest.isEmpty() && !destCandidates.contains(farDest.get(0).stopId())) {
-                    destCandidates.add(farDest.get(0).stopId());
-                }
-            }
-        } else {
-            if (destinationStopId != null && !destinationStopId.isBlank()) {
-                destCandidates.add(destinationStopId);
-            }
-        }
+        //checks if user provided a destination stop ID or dropped a pin (destination coordinates).
+        // If coordinates are provided, it resolves them to candidate stop IDs to use as routing targets.
+        // This allows users to drop a pin on the map as their destination and still get transit options even if they didn't specify a stop ID.
+        List<String> destCandidates = resolveDestinationCandidates(
+                destinationStopId, destinationLat, destinationLon, stops, schedule);
 
         if (destCandidates.isEmpty()) {
             return new JourneySearchResult(List.of(), 0.0);
@@ -145,65 +109,13 @@ public class SearchJourneyUseCase {
 
         // When "arrive by" is set, start searching 3 hours before the target so we find real options.
         // Otherwise fall back to the explicit departure time or the current time.
-        int startTime;
-        if (arriveBySeconds != null) {
-            startTime = Math.max(0, arriveBySeconds - 3 * 3600);
-        } else {
-            startTime = departureTimeSeconds != null
-                    ? departureTimeSeconds
-                    : LocalTime.now().toSecondOfDay();
-        }
+        int startTime = computeStartTime(departureTimeSeconds, arriveBySeconds);
 
         //Resolve effective origin(s)
-        // When the user drops a map pin, consider ALL stops within 600 m as potential origins
-        // (not just the single nearest). This is essential because two stops at the same
-        // location can serve opposite directions — e.g. the eastbound and westbound Gleann Dara
-        // stops are only ~30 m apart but serve completely different services.
-        // When a stop ID was typed directly, we use only that stop.
-        List<StopDistance> originCandidates;
-        if (originLat != null && originLon != null && (originStopId == null || originStopId.isBlank())) {
-            // Use the 3 nearest stops within 600 m.  Limiting to 3 avoids generating a flood of
-            // near-identical options when many stops of the same bus line are nearby (e.g. Bus 405
-            // passes through four stops all within 400 m of the pin).
-            List<StopDistance> nearby = findNearbyConnectedStops(originLat, originLon, 0.6, stops, adjacencyList);
-            List<StopDistance> candidates = new ArrayList<>(nearby.size() > 3 ? nearby.subList(0, 3) : nearby);
-
-            // Also look for the nearest train station within 5 km — train stations are typically
-            // further from residential pins but still reachable on foot.  Only add if not already
-            // in the candidate list (avoids duplicate when the user pins right next to a station).
-            StopDistance nearestTrain = findNearestTrainStop(originLat, originLon, stops, schedule, 20.0);
-            if (nearestTrain != null) {
-                boolean alreadyPresent = candidates.stream()
-                        .anyMatch(c -> c.stopId().equals(nearestTrain.stopId()));
-                if (!alreadyPresent) {
-                    candidates.add(nearestTrain);
-                }
-            }
-
-            // If no stop was found within a walkable distance (bus within 600 m or train within 2 km),
-            // also add the nearest connected stop within 20 km as a fallback for rural origin pins.
-            boolean hasWalkableOrigin = !nearby.isEmpty() ||
-                    (nearestTrain != null && nearestTrain.distanceKm() <= 2.0);
-            if (!hasWalkableOrigin) {
-                List<StopDistance> farOrigin = findNearbyConnectedStops(originLat, originLon, 20.0, stops, adjacencyList);
-                if (!farOrigin.isEmpty()) {
-                    boolean alreadyPresent = candidates.stream().anyMatch(c -> c.stopId().equals(farOrigin.get(0).stopId()));
-                    if (!alreadyPresent) {
-                        candidates.add(farOrigin.get(0));
-                    }
-                }
-            }
-
-            // If we found no nearby stops, return empty result immediately to avoid running expensive Dijkstra searches with invalid origin/destination.
-            originCandidates = candidates;
-            if (originCandidates.isEmpty()) {
-                return new JourneySearchResult(List.of(), 0.0);
-            }
-        } else {
-            if (originStopId == null || originStopId.isBlank()) {
-                return new JourneySearchResult(List.of(), 0.0);
-            }
-            originCandidates = List.of(new StopDistance(originStopId, 0.0));
+        List<StopDistance> originCandidates = resolveOriginCandidates(
+                originStopId, originLat, originLon, stops, adjacencyList, schedule);
+        if (originCandidates.isEmpty()) {
+            return new JourneySearchResult(List.of(), 0.0);
         }
 
         // Use the nearest candidate as the "effective" origin for fallback Dijkstra and car baseline.
@@ -224,46 +136,8 @@ public class SearchJourneyUseCase {
         Set<String>         seenSignatures = new HashSet<>();
 
         if (!schedule.isEmpty()) {
-            // Try each destination candidate in order; collect routes from whichever produce results.
-            for (String destId : destCandidates) {
-                String scheduleDest = resolveScheduleStop(destId, schedule, stops, adjacencyList);
-                if (scheduleDest == null) continue;
-
-                // Try every nearby origin stop so we don't miss buses on the opposite side of the road.
-                for (StopDistance candidate : originCandidates) {
-                    int walkSecs     = walkingSeconds(candidate.distanceKm());
-                    int boardingTime = startTime + walkSecs;
-
-                    String scheduleOrigin = resolveScheduleStop(candidate.stopId(), schedule, stops, adjacencyList);
-                    if (scheduleOrigin == null) continue;
-
-                    // Primary path: real departure times from GTFS schedule
-                    ScheduledPath fastest = scheduleAwareDijkstra(
-                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime, FASTEST_TRANSFER_PENALTY_SECONDS);
-                    ScheduledPath fewestTransfers = scheduleAwareDijkstra(
-                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime, TRANSFER_SCORE_PENALTY);
-                    // 3rd option: next bus 30 minutes later (catches a different service)
-                    ScheduledPath laterOption = scheduleAwareDijkstra(
-                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime + 1800, FASTEST_TRANSFER_PENALTY_SECONDS);
-                    // If no buses found AND it is late night (after 21:00), retry from next morning.
-                    boolean isLateNight = boardingTime > 21 * 3600;
-                    if (fastest == null && isLateNight) {
-                        fastest = scheduleAwareDijkstra(scheduleOrigin, scheduleDest, schedule, stops, footpaths, 0, FASTEST_TRANSFER_PENALTY_SECONDS);
-                    }
-                    if (fewestTransfers == null && isLateNight) {
-                        fewestTransfers = scheduleAwareDijkstra(
-                                scheduleOrigin, scheduleDest, schedule, stops, footpaths, 0, TRANSFER_SCORE_PENALTY);
-                    }
-                    if (laterOption == null && isLateNight) {
-                        laterOption = scheduleAwareDijkstra(
-                                scheduleOrigin, scheduleDest, schedule, stops, footpaths, 3600, FASTEST_TRANSFER_PENALTY_SECONDS);
-                    }
-
-                    addScheduledOption(optionsToScore, seenSignatures, fastest,        stops, walkSecs, destId, routeShapes);
-                    addScheduledOption(optionsToScore, seenSignatures, fewestTransfers, stops, walkSecs, destId, routeShapes);
-                    addScheduledOption(optionsToScore, seenSignatures, laterOption,     stops, walkSecs, destId, routeShapes);
-                }
-            }
+            runScheduledSearch(originCandidates, destCandidates, schedule, stops,
+                    footpaths, adjacencyList, startTime, routeShapes, optionsToScore, seenSignatures);
         }
 
         // If schedule-aware search found nothing (e.g. no more departures today), fall back to
@@ -314,12 +188,210 @@ public class SearchJourneyUseCase {
         return new JourneySearchResult(List.copyOf(allOptions), carBaselineCo2, carGeometry);
     }
 
+    // Returns the list of destination stop IDs to try for routing.
+    // When the user drops a map pin, we look for the nearest bus stop within 600 m
+    // and the nearest train station within 20 km as candidates.
+    // When a stop was typed directly, we use only that stop.
+    private List<String> resolveDestinationCandidates(
+            String destinationStopId,
+            Double destinationLat,
+            Double destinationLon,
+            Map<String, Stop> stops,
+            Map<String, List<ScheduledConnection>> schedule
+    ) {
+        // Build a list of destination stop IDs to try. When coordinates are given we try:
+        //   1. The nearest scheduled stop within 600 m (a nearby bus stop the user might mean)
+        //   2. The nearest TRAIN station within 20 km (covers rural Ireland where no bus stop
+        //      exists near the pin but a train station is within reasonable distance)
+        // Both candidates are tried so a user near a bus stop still gets bus results AND
+        // a user far from any bus stop still gets a train route to the nearest station.
+        List<String> destCandidates = new ArrayList<>();
+        if (destinationLat != null && destinationLon != null && (destinationStopId == null || destinationStopId.isBlank())) {
+            // Nearest scheduled bus stop within 600 m
+            List<StopDistance> nearbyDest = findNearbyStops(destinationLat, destinationLon, 0.6, stops).stream()
+                    .filter(sd -> !schedule.getOrDefault(sd.stopId(), List.of()).isEmpty())
+                    .collect(Collectors.toList());
+            if (!nearbyDest.isEmpty()) {
+                destCandidates.add(nearbyDest.get(0).stopId());
+            }
+
+            // Always also try the nearest train station within 20 km
+            StopDistance nearestTrainDest = findNearestTrainStop(destinationLat, destinationLon, stops, schedule, 20.0);
+            if (nearestTrainDest != null && !destCandidates.contains(nearestTrainDest.stopId())) {
+                destCandidates.add(nearestTrainDest.stopId());
+            }
+
+            // If no stop was found within a walkable distance (bus within 600 m or train within 2 km),
+            // also add the nearest scheduled stop within 20 km. This handles pins in rural areas where
+            // a distant train station was already added but the nearest bus stop is closer and more useful.
+            boolean hasWalkableDest = !nearbyDest.isEmpty() ||
+                    (nearestTrainDest != null && nearestTrainDest.distanceKm() <= 2.0);
+            if (!hasWalkableDest) {
+                List<StopDistance> farDest = findNearbyStops(destinationLat, destinationLon, 20.0, stops).stream()
+                        .filter(sd -> !schedule.getOrDefault(sd.stopId(), List.of()).isEmpty())
+                        .collect(Collectors.toList());
+                if (!farDest.isEmpty() && !destCandidates.contains(farDest.get(0).stopId())) {
+                    destCandidates.add(farDest.get(0).stopId());
+                }
+            }
+        } else {
+            if (destinationStopId != null && !destinationStopId.isBlank()) {
+                destCandidates.add(destinationStopId);
+            }
+        }
+        return destCandidates;
+    }
+
+    // Returns the time (in seconds-since-midnight) to start the Dijkstra search from.
+    // When "arrive by" is set, we search from 3 hours before that target.
+    // Otherwise we use the explicit departure time or the current time.
+    private int computeStartTime(Integer departureTimeSeconds, Integer arriveBySeconds) {
+        if (arriveBySeconds != null) {
+            return Math.max(0, arriveBySeconds - 3 * 3600);
+        } else {
+            return departureTimeSeconds != null
+                    ? departureTimeSeconds
+                    : LocalTime.now().toSecondOfDay();
+        }
+    }
+
+    // Returns the list of candidate origin stops to try.
+    // When the user drops a map pin, we try up to 3 nearby bus stops within 600 m
+    // plus the nearest train station within 20 km.
+    // When a stop was typed directly, we use only that stop.
+    private List<StopDistance> resolveOriginCandidates(
+            String originStopId,
+            Double originLat,
+            Double originLon,
+            Map<String, Stop> stops,
+            Map<String, List<StopEdge>> adjacencyList,
+            Map<String, List<ScheduledConnection>> schedule
+    ) {
+        // When the user drops a map pin, consider ALL stops within 600 m as potential origins
+        // (not just the single nearest). This is essential because two stops at the same
+        // location can serve opposite directions
+        if (originLat != null && originLon != null && (originStopId == null || originStopId.isBlank())) {
+            // Use the 3 nearest stops within 600 m.  Limiting to 3 avoids generating a flood of
+            // near-identical options when many stops of the same bus line are nearby (e.g. Bus 405
+            // passes through four stops all within 400 m of the pin).
+            List<StopDistance> nearby = findNearbyConnectedStops(originLat, originLon, 0.6, stops, adjacencyList);
+            List<StopDistance> candidates = new ArrayList<>(nearby.size() > 3 ? nearby.subList(0, 3) : nearby);
+
+            // Also look for the nearest train station within 5 km — train stations are typically
+            // further from residential pins but still reachable on foot.  Only add if not already
+            // in the candidate list (avoids duplicate when the user pins right next to a station).
+            StopDistance nearestTrain = findNearestTrainStop(originLat, originLon, stops, schedule, 20.0);
+            if (nearestTrain != null) {
+                boolean alreadyPresent = candidates.stream()
+                        .anyMatch(c -> c.stopId().equals(nearestTrain.stopId()));
+                if (!alreadyPresent) {
+                    candidates.add(nearestTrain);
+                }
+            }
+
+            // If no stop was found within a walkable distance (bus within 600 m or train within 2 km),
+            // also add the nearest connected stop within 20 km as a fallback for rural origin pins.
+            boolean hasWalkableOrigin = !nearby.isEmpty() ||
+                    (nearestTrain != null && nearestTrain.distanceKm() <= 2.0);
+            if (!hasWalkableOrigin) {
+                List<StopDistance> farOrigin = findNearbyConnectedStops(originLat, originLon, 20.0, stops, adjacencyList);
+                if (!farOrigin.isEmpty()) {
+                    boolean alreadyPresent = candidates.stream().anyMatch(c -> c.stopId().equals(farOrigin.get(0).stopId()));
+                    if (!alreadyPresent) {
+                        candidates.add(farOrigin.get(0));
+                    }
+                }
+            }
+
+            // If we found no nearby stops, return empty result immediately to avoid running expensive Dijkstra searches with invalid origin/destination.
+            return candidates;
+        } else {
+            if (originStopId == null || originStopId.isBlank()) {
+                return List.of();
+            }
+            return List.of(new StopDistance(originStopId, 0.0));
+        }
+    }
+
+    // Runs the schedule-aware Dijkstra for every combination of origin and destination candidates.
+    // For each pair, we try three variants: fastest, fewest-transfers, and 30 min later.
+    // If it is late at night, we also retry from the start of the next day.
+    // Results are added to optionsToScore, deduplicated by signature.
+    private void runScheduledSearch(
+            List<StopDistance> originCandidates,
+            List<String> destCandidates,
+            Map<String, List<ScheduledConnection>> schedule,
+            Map<String, Stop> stops,
+            Map<String, List<FootpathEdge>> footpaths,
+            Map<String, List<StopEdge>> adjacencyList,
+            int startTime,
+            Map<String, List<double[]>> routeShapes,
+            List<JourneyOption> optionsToScore,
+            Set<String> seenSignatures
+    ) {
+        // Try each destination candidate in order; collect routes from whichever produce results.
+        for (String destId : destCandidates) {
+            String scheduleDest = resolveScheduleStop(destId, schedule, stops, adjacencyList);
+            if (scheduleDest == null) continue;
+
+            // Try every nearby origin stop so we don't miss buses on the opposite side of the road.
+            for (StopDistance candidate : originCandidates) {
+                int walkSecs     = walkingSeconds(candidate.distanceKm());
+                int boardingTime = startTime + walkSecs;
+
+                String scheduleOrigin = resolveScheduleStop(candidate.stopId(), schedule, stops, adjacencyList);
+                if (scheduleOrigin == null) continue;
+
+                // Primary path: real departure times from GTFS schedule
+                ScheduledPath fastest = scheduleAwareDijkstra(
+                        scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime, FASTEST_TRANSFER_PENALTY_SECONDS);
+                ScheduledPath fewestTransfers = scheduleAwareDijkstra(
+                        scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime, TRANSFER_SCORE_PENALTY);
+                // 3rd option: next bus 30 minutes later (catches a different service)
+                ScheduledPath laterOption = scheduleAwareDijkstra(
+                        scheduleOrigin, scheduleDest, schedule, stops, footpaths, boardingTime + 1800, FASTEST_TRANSFER_PENALTY_SECONDS);
+                // If no buses found AND it is late night (after 21:00), retry from next morning.
+                boolean isLateNight = boardingTime > 21 * 3600;
+                if (fastest == null && isLateNight) {
+                    fastest = scheduleAwareDijkstra(scheduleOrigin, scheduleDest, schedule, stops, footpaths, 0, FASTEST_TRANSFER_PENALTY_SECONDS);
+                }
+                if (fewestTransfers == null && isLateNight) {
+                    fewestTransfers = scheduleAwareDijkstra(
+                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, 0, TRANSFER_SCORE_PENALTY);
+                }
+                if (laterOption == null && isLateNight) {
+                    laterOption = scheduleAwareDijkstra(
+                            scheduleOrigin, scheduleDest, schedule, stops, footpaths, 3600, FASTEST_TRANSFER_PENALTY_SECONDS);
+                }
+
+                addScheduledOption(optionsToScore, seenSignatures, fastest,        stops, walkSecs, destId, routeShapes);
+                addScheduledOption(optionsToScore, seenSignatures, fewestTransfers, stops, walkSecs, destId, routeShapes);
+                addScheduledOption(optionsToScore, seenSignatures, laterOption,     stops, walkSecs, destId, routeShapes);
+            }
+        }
+    }
+
     // Builds a car baseline option using OpenRouteService for distance and duration, falling back to haversine distance if the API call fails.
     // The car baseline is used to provide context to the user — if the recommended bus route takes 45 minutes but the car baseline is 15 minutes, the user understands that the bus is slower but may still prefer it for cost or environmental reasons.  If the car baseline is close to or worse than the bus options, that strengthens the recommendation for public transport.
     // Max walking distance to count a nearby stop as "reached the destination"
     private static final double DEST_WALK_RADIUS_KM = 0.45;
 
-    // Result of building the car baseline, including the JourneyOption and the route geometry for map display.
+    // -----------------------------------------------------------------------
+    // scheduleAwareDijkstra — 12-step overview
+    //
+    //  Step 1:  Start State          — create the initial TripState at the origin
+    //  Step 2:  Priority Queue       — always pop the lowest-score state first
+    //  Step 3:  bestScore map        — skip states we have already beaten
+    //  Step 4:  Pop best state       — queue.poll() at the top of the loop
+    //  Step 5:  Exact dest check     — stop immediately if we reach the destination
+    //  Step 6:  Proximity dest logic — record the closest stop within walk radius
+    //  Step 7:  Explore connections  — loop over every bus departing from this stop
+    //  Step 8:  Direction filter     — skip buses going the wrong way at the origin
+    //  Step 9:  Transfer logic       — count route changes as transfers
+    //  Step 10: Score calculation    — score = arrival time + transfers × penalty
+    //  Step 11: Walking footpath     — walk to a nearby stop (enables bus → walk → train)
+    //  Step 12: Reconstruct path     — walk back through parent pointers to build legs
+    // -----------------------------------------------------------------------
     private ScheduledPath scheduleAwareDijkstra(
             String originStopId,
             String destinationStopId,
@@ -333,12 +405,12 @@ public class SearchJourneyUseCase {
         double destLat = destStop != null ? destStop.getLatitude()  : Double.NaN;
         double destLon = destStop != null ? destStop.getLongitude() : Double.NaN;
 
-        // bestScore tracks the lowest score (arrivalTime + transfers*penalty) seen
-        // for each (stopId, routeId) pair so we can skip stale queue entries.
-        Map<String, Integer>     bestScore = new HashMap<>();
-        PriorityQueue<TripState> queue     = new PriorityQueue<>(Comparator.comparingInt(TripState::score));
+        // ===== STEP 3: bestScore map — tracks the lowest score seen for each (stopId, routeId) pair so we can skip stale queue entries =====
+        Map<String, Integer>bestScore = new HashMap<>();
+        // ===== STEP 2: Priority Queue — always processes the lowest-score state first, driving Dijkstra's greedy expansion =====
+        PriorityQueue<TripState> queue = new PriorityQueue<>(Comparator.comparingInt(TripState::score));
 
-        // Initial state: at the origin stop, not on any route, at the specified start time, with zero transfers and zero score.
+        // ===== STEP 1: Start State — create the initial state at the origin stop, not on any route, at the specified start time, with zero transfers and zero score =====
         TripState start = new TripState(originStopId, null, startTimeSeconds, 0, 0, null, null, false);
         queue.add(start);
         bestScore.put(stateKey(originStopId, null), 0);
@@ -351,9 +423,10 @@ public class SearchJourneyUseCase {
         final int PROXIMITY_SLACK_S = 600;
 
         while (!queue.isEmpty()) {
+            // ===== STEP 4: Pop best current state — take the lowest-score state from the queue =====
             TripState current = queue.poll();
 
-            // Skip this entry if we already found a better path to this state
+            // Skip this entry if we already found a better path to this state.
             if (current.score() > bestScore.getOrDefault(stateKey(current.stopId(), current.routeId()), Integer.MAX_VALUE)) {
                 continue;
             }
@@ -363,13 +436,13 @@ public class SearchJourneyUseCase {
                 break;
             }
 
-            // Exact match always terminates immediately.
+            // Step 5: Exact destination check — if we have reached the destination stop exactly, we are done.
             if (current.stopId().equals(destinationStopId)) {
                 destinationState = current;
                 break;
             }
 
-            // Proximity check: record the closest stop within walking distance of the destination.
+            // Step 6: Proximity destination logic — record the closest stop within walking distance of the destination.
             // Do NOT break here — continue so the bus can reach an even closer stop (e.g. Eyre Square
             // is closer to Ceannt Station than Saint Francis Street which comes one stop earlier).
             if (!Double.isNaN(destLat)) {
@@ -377,6 +450,8 @@ public class SearchJourneyUseCase {
                 if (cur != null) {
                     double dist = emissionsCalculator.haversineDistanceKm(
                             cur.getLatitude(), cur.getLongitude(), destLat, destLon);
+
+                    // We use a walk radius of 450 m instead of 300 m to allow for slightly longer walks that may be more pleasant (e.g. walking through Eyre Square instead of along busy streets).  The recommendation engine will take the walk distance into account when scoring and recommending options, so a slightly longer walk to a much better bus route can still be recommended over a shorter walk to a worse route.
                     if (dist <= DEST_WALK_RADIUS_KM && dist < bestProximityDistKm) {
                         bestProximityDistKm = dist;
                         bestProximityState  = current;
@@ -384,15 +459,15 @@ public class SearchJourneyUseCase {
                 }
             }
 
-            // Look at all buses departing from this stop
+            // Step 7: Explore scheduled connections — look at all buses departing from this stop that haven't left yet.
             for (ScheduledConnection conn : schedule.getOrDefault(current.stopId(), List.of())) {
 
-                // Can only board a bus that has not yet left
+                // Can only board a bus that has not yet left.
                 if (conn.getDepartureTimeSeconds() < current.arrivalTime()) {
                     continue;
                 }
 
-                // Direction filter: at the origin stop (no route yet, and not reached via a footpath walk),
+                // Step 8: Direction filter at the start — at the origin stop (no route yet, and not reached via a footpath walk),
                 // skip connections that move more than 100 m further from the destination.
                 // This prevents boarding a loop route in the wrong direction at the very start.
                 // We skip this filter after a footpath walk so we don't over-restrict stops near
@@ -411,11 +486,13 @@ public class SearchJourneyUseCase {
                     }
                 }
 
-                // Boarding a different route than the one we are already on is a transfer.
+                // Step 9: Transfer logic — boarding a different route than the one we are already on is a transfer.
                 // The very first boarding (routeId == null) is not counted as a transfer.
                 boolean isTransfer  = current.routeId() != null && !conn.getRouteId().equals(current.routeId());
                 int     newTransfers = current.transfers() + (isTransfer ? 1 : 0);
-                int     newScore     = conn.getArrivalTimeSeconds() + newTransfers * transferPenaltySeconds; // the Dijkstra score is arrival time plus a penalty for transfers, so it finds the fastest route when transferPenaltySeconds is low (e.g. 10 min) and the fewest-transfer route when it is high (e.g. 1 hour)
+                // Step 10: Score calculation — Dijkstra score = arrival time + (transfers × penalty).
+                // Low penalty (10 min) finds the fastest route; high penalty (1 hour) finds the fewest-transfer route.
+                int     newScore     = conn.getArrivalTimeSeconds() + newTransfers * transferPenaltySeconds;
 
                 String nextKey = stateKey(conn.getToStopId(), conn.getRouteId());
                 if (newScore < bestScore.getOrDefault(nextKey, Integer.MAX_VALUE)) {
@@ -433,7 +510,7 @@ public class SearchJourneyUseCase {
                 }
             }
 
-            // Footpath transfers: walk to any stop within 300 m.
+            // Step 11: Walking footpath — walk to any stop within 300 m.
             // This is what enables train → walk → bus journeys.
             // We only walk one hop (walkedHere prevents chaining walk→walk→walk).
             if (!current.walkedHere()) {
@@ -459,7 +536,9 @@ public class SearchJourneyUseCase {
             }
         }
 
-        // Fall back to the closest proximity stop if no exact match was found.
+        // Step 12: Reconstructing path — use the best state found (exact match or closest proximity stop)
+        // and walk back through parent pointers to build the list of legs.
+        // If no route was found at all, return null (the fallback Dijkstra will run instead).
         if (destinationState == null) {
             destinationState = bestProximityState;
         }
@@ -512,6 +591,7 @@ public class SearchJourneyUseCase {
         return new ScheduledPath(new ArrayList<>(legs), Math.max(0, totalDuration), destination.transfers());
     }
 
+    //converts  A found path into a journy option 
     private void addScheduledOption(
             List<JourneyOption>         target,
             Set<String>                 seenSignatures,

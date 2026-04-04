@@ -23,7 +23,7 @@ export async function saveJourney(route, carCo2Grams, destination) {
     carCo2Grams: carCo2Grams || 0,
     modeSummary: route.modeSummary || "Transit",
     destination: destination || "",
-    transfers: route.legs ? route.legs.filter(l => l.mode !== "WALK").length - 1 : 0,
+    transfers: route.transfers ?? 0,
     userId: getUserId(),
   };
 

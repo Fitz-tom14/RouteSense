@@ -39,11 +39,13 @@ public class OpenRouteServiceClient {
             return Optional.empty();
         }
 
+        // Build the JSON request body with the origin and destination coordinates, and set the preference to "fastest" to get the quickest route.
         try {
             String body = String.format(Locale.US,
                     "{\"coordinates\":[[%f,%f],[%f,%f]],\"preference\":\"fastest\",\"geometry\":true}",
                     originLon, originLat, destLon, destLat);
 
+                    // Build the HTTP POST request with the appropriate headers and body.
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(ORS_URL))
                     .header("Accept", "application/json, application/geo+json")
@@ -52,6 +54,7 @@ public class OpenRouteServiceClient {
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
 
+                    // Send the request and get the response.  If the status code is not 200, log a warning and return empty.
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() != 200) {
@@ -61,6 +64,7 @@ public class OpenRouteServiceClient {
 
             return parseResponse(response.body());
 
+            // If any exceptions occur during the request or response parsing, log a warning and return empty.
         } catch (Exception e) {
             LOGGER.warn("OpenRouteService call failed: {}", e.getMessage());
             return Optional.empty();
@@ -76,6 +80,7 @@ public class OpenRouteServiceClient {
             JsonNode feature  = root.path("features").get(0);
             JsonNode segment  = feature.path("properties").path("segments").get(0);
 
+            // Extract distance in meters and duration in seconds from the response.
             double distanceMetres = segment.path("distance").asDouble();
             double durationSecs   = segment.path("duration").asDouble();
 
@@ -90,6 +95,7 @@ public class OpenRouteServiceClient {
                 }
             }
 
+            // Create and return a CarRoute object with the extracted distance, duration, and geometry.
             return Optional.of(new CarRoute(
                     (int) Math.round(durationSecs),
                     distanceMetres / 1000.0,

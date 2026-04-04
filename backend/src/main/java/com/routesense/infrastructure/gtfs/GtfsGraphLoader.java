@@ -36,7 +36,7 @@ public class GtfsGraphLoader {
     private static final int    DEFAULT_EDGE_TIME_SECONDS  = 120;
     private static final double MAX_FOOTPATH_DISTANCE_KM   = 0.3;  // 300 m — max walking distance for a mid-journey transfer
     private static final double WALK_SPEED_KMH             = 4.8;  // walking speed used to compute footpath travel time
-    private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class); 
 
     private Map<String, Stop> stops = Map.of();// stopId → Stop
     private Map<String, List<StopEdge>> adjacencyList = Map.of();// stopId → list of outgoing edges (sorted by toStopId for deterministic iteration order)
@@ -115,23 +115,28 @@ public class GtfsGraphLoader {
     // Stop loading
     
 
+    // Loads stops.txt and builds a map of stopId → Stop with the stop's name and coordinates.
     private Map<String, Stop> loadStops() {
         Map<String, Stop> result = new HashMap<>();
 
+        // Required columns: stop_id, stop_lat, stop_lon.  stop_name is optional (some GTFS feeds omit it) but we load it when available for better map labels.
         try (BufferedReader reader = openGtfsReader("stops.txt")) {
             String header = reader.readLine();
             if (header == null) return result;
 
+            // Build a column index to handle arbitrary column order and detect missing required columns.
             Map<String, Integer> col = buildColumnIndex(header);
             Integer stopIdIdx    = col.get("stop_id");
             Integer stopNameIdx  = col.get("stop_name");
             Integer stopLatIdx   = col.get("stop_lat");
             Integer stopLonIdx   = col.get("stop_lon");
 
+            // If any of the required columns are missing, return an empty map to avoid loading a broken graph.
             if (stopIdIdx == null || stopNameIdx == null || stopLatIdx == null || stopLonIdx == null) {
                 return result;
             }
 
+            // Parse each line into a Stop object and add it to the result map.  Skip lines with missing or invalid data.
             String line;
             while ((line = reader.readLine()) != null) {
                 List<String> tokens = parseCsvLine(line);
@@ -170,10 +175,12 @@ public class GtfsGraphLoader {
 
         Map<String, TripInfo> tripInfoByTripId = loadTripInfoByTripId();
 
+        // Load stop_times.txt and build edges and schedules.  This is the most complex part of the GTFS loading because we have to:
         try (BufferedReader reader = openGtfsReader("stop_times.txt")) {
             String header = reader.readLine();
             if (header == null) return new LoadedEdgeData(Map.of(), Map.of());
 
+            // Build a column index to handle arbitrary column order and detect missing required columns.
             Map<String, Integer> col = buildColumnIndex(header);
             Integer tripIdIdx       = col.get("trip_id");
             Integer arrivalTimeIdx  = col.get("arrival_time");
@@ -270,6 +277,7 @@ public class GtfsGraphLoader {
 
             if (from.stopId().equals(to.stopId())) continue;
 
+            //travel time in seconds, with a fallback default if the GTFS data is bad (e.g. arrival time goes backwards or is the same at two consecutive stops) 
             int travelSeconds = Math.max(DEFAULT_EDGE_TIME_SECONDS, to.arrivalSeconds() - from.arrivalSeconds());
 
             // Route-aware edge key: "from->to:routeId" keeps Bus 402 and Bus 405 separate
