@@ -4,20 +4,19 @@ import com.routesense.application.port.JourneyHistoryRepository;
 import com.routesense.domain.model.JourneyRecord;
 import org.springframework.stereotype.Service;
 
-// This use case class is responsible for saving a journey record to the repository.
-//  It interacts with the JourneyHistoryRepository to persist the data.
+// Application layer — talks to the port interface only, not JPA directly, so the domain stays clean.
 @Service
 public class SaveJourneyUseCase {
 
     private final JourneyHistoryRepository repository;
 
-    // Constructor injection of the JourneyHistoryRepository to allow for decoupling and easier testing
+    // Spring sees this constructor and automatically injects the repository — no manual wiring needed
     public SaveJourneyUseCase(JourneyHistoryRepository repository) {
         this.repository = repository;
     }
 
-    // The execute method takes a JourneyRecord object as input and saves it to the repository
+    // Called by the history controller once the user's journey is complete
     public void execute(JourneyRecord record) {
-        repository.save(record);
+        repository.save(record); // hands off to the JPA implementation in the infrastructure layer
     }
 }

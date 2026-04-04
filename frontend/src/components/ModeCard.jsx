@@ -1,8 +1,6 @@
-// React component to display the transport modes used in the selected route, showing the count of legs for each mode. Uses emojis for visual representation of modes.
+// Groups the journey legs by mode and shows a count for each — e.g. "Bus × 2, Walk × 1".
 const MODE_ICONS = { Bus: '🚌', Train: '🚆', Walk: '🚶', Bike: '🚲' };
 
-// Props:
-// - legs: array of leg objects from the selected journey, where each leg has a 'mode' property indicating the transport mode used (e.g. "Bus", "Train").
 function ModeCard({ legs }) {
   const modeCounts = {};
   (legs || []).forEach((leg) => {
@@ -13,8 +11,6 @@ function ModeCard({ legs }) {
   const entries = Object.entries(modeCounts);
   const hasData = entries.length > 0;
 
-  // Displays the transport modes used in the selected route, showing the count of legs for each mode.
-  // If no route is selected, prompts the user to select a route to see the modes.
   return (
     <div className="card mode-card">
       <h3 className="card-title">Transport Mode Used</h3>

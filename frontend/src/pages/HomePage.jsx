@@ -5,27 +5,24 @@ import SummaryCard from '../components/SummaryCard';
 import BottomNav from '../components/BottomNav';
 import '../styles/home.css';
 
-// HomePage.jsx -
-// React component for the home page, displaying key insights about the selected journey such as duration, CO₂ emissions, transport modes used, and a summary comparing it to a baseline car journey. If no journey is selected, prompts the user to search for a route.
+// Shows KPI cards for the journey the user selected on the Routes page.
+// If nothing is selected yet, the cards show '--' placeholders and prompt them to search.
 function HomePage({ activePage, onNavigate, selectedJourney, carBaselineCo2Grams }) {
   const journey = selectedJourney;
 
-  // Calculates the journey duration in minutes, and formats the CO₂ emissions for display. 
-  // If no journey is selected, shows placeholders instead. The page includes a top bar, a grid of cards showing the KPIs and summary, and a bottom navigation for switching between pages. If a journey is selected and has a recommendation reason, it displays that reason in a banner at the top of the insights section.
+  // durationSeconds and totalDurationSeconds come from two different parts of the API — guard for both
   const durationMins = journey
     ? Math.round((journey.durationSeconds || journey.totalDurationSeconds || 0) / 60)
     : null;
 
-    // Formats the CO₂ emissions for display, converting to kg if over 1000g and rounding appropriately.
-    // If no journey is selected, shows '--' as a placeholder. The unit is displayed as 'g CO₂' or 'kg CO₂' based on the value.
+  // ?. is optional chaining — safely reads co2Grams even if journey is null, instead of crashing
+  // Show in grams below 1kg, switch to kg with one decimal above — keeps numbers readable
   const co2Grams = journey?.co2Grams || 0;
   const co2Display = co2Grams >= 1000
     ? `${(co2Grams / 1000).toFixed(1)}`
     : `${Math.round(co2Grams)}`;
   const co2Unit = co2Grams >= 1000 ? 'kg CO₂' : 'g CO₂';
 
-  // If no journey is selected, prompts the user to search for a route and select it to see insights.
-  // If a journey is selected and has a recommendation reason, displays that reason in a banner at the top of the insights section. The main content area includes a grid of cards showing the journey time, CO₂ emissions, transport modes used, and a summary comparing it to driving. At the bottom, there's a button to search for another route, which navigates back to the Routes page.
   return (
     <div className="home-page">
       <TopBar title="Home" />
@@ -58,7 +55,7 @@ function HomePage({ activePage, onNavigate, selectedJourney, carBaselineCo2Grams
             unit={journey ? co2Unit : 'kg CO₂'}
           />
 
-          <ModeCard legs={journey?.legs || []} />
+          <ModeCard legs={journey?.legs || []} />{/* || [] means ModeCard always gets a list, never undefined */}
 
           <SummaryCard journey={journey} carBaselineCo2Grams={carBaselineCo2Grams || 0} />
         </div>

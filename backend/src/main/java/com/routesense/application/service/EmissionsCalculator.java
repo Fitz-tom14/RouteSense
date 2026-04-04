@@ -3,8 +3,7 @@ package com.routesense.application.service;
 import com.routesense.domain.model.TransportMode;
 import org.springframework.stereotype.Component;
 
-// Service responsible for calculating CO2 emissions for different transport modes and distances.
-// This is used by the journey search use case to estimate the emissions for each journey option and to calculate the car baseline emissions for comparison.
+// Estimates CO2 emissions per journey leg and calculates the car baseline for comparison.
 @Component
 public class EmissionsCalculator {
 
@@ -19,24 +18,23 @@ public class EmissionsCalculator {
 
     private static final double EARTH_RADIUS_KM = 6371.0;// Average radius of the Earth in kilometers.
 
-    // Estimates CO2 emissions for a given distance and transport mode.
+    // Multiplies distance by the emission rate for that mode to get total grams of CO2 for one leg
     public double estimateEdgeCo2Grams(double distanceKm, TransportMode mode) {
         return distanceKm * emissionFactor(mode);
     }
 
-    // Estimates CO2 emissions for a car given the road distance.
+    // Same calculation but always uses the car rate — used to build the "by car" comparison on the frontend
     public double estimateCarCo2Grams(double roadDistanceKm) {
         return roadDistanceKm * CAR_G_PER_KM;
     }
 
-    // Returns the emission factor for a given transport mode.
+    // Looks up the emission factor for the given mode — falls back to bus rate if the mode is unknown
     public double emissionFactor(TransportMode mode) {
         if (mode == null) {
-            // Fallback when edge mode is not available from graph data.
+            // The graph data can be incomplete, so this guards against a crash if mode is missing
             return DEFAULT_PUBLIC_TRANSPORT_G_PER_KM;
         }
 
-        // Return specific emission factors for known modes, otherwise use a default for public transport.
         return switch (mode) {
             case WALK -> WALK_G_PER_KM;
             case BIKE -> BIKE_G_PER_KM;
@@ -46,18 +44,17 @@ public class EmissionsCalculator {
         };
     }
 
-    // Haversine formula to calculate the great-circle distance between two points on the Earth.
+    // GPS coordinates sit on a sphere, not a flat surface, so normal distance maths doesn't work.
+    // The Haversine formula gives the shortest distance between two lat/lon points on the Earth's surface.
     public double haversineDistanceKm(double lat1, double lon1, double lat2, double lon2) {
         double dLat = Math.toRadians(lat2 - lat1);
         double dLon = Math.toRadians(lon2 - lon1);
 
-        // Haversine formula
         double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
                 + Math.cos(Math.toRadians(lat1))
                 * Math.cos(Math.toRadians(lat2))
                 * Math.sin(dLon / 2) * Math.sin(dLon / 2);
 
-        // Calculate the great-circle distance in kilometers.
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return EARTH_RADIUS_KM * c;
     }

@@ -18,9 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.stream.Collectors;
 
-// Controller for journey search endpoints. Handles requests from the frontend when the user searches for a journey from A to B.
-// Responsibilities:
-// - Parse request params from the SearchJourneyRequestDto
+// Thin controller — takes a search request from the frontend, runs it through the use case, and maps the result to DTOs.
+// toDto() handles the domain → DTO conversion so the domain model never leaks into the HTTP response.
 @RestController
 @RequestMapping("/api/journeys")
 public class JourneyController {
@@ -31,7 +30,7 @@ public class JourneyController {
         this.searchJourneyUseCase = searchJourneyUseCase;
     }
 
-    // POST /api/journeys/search
+    // POST /api/journeys/search — @RequestBody tells Spring to parse the incoming JSON into a SearchJourneyRequestDto
     @PostMapping("/search")
     public JourneySearchResponseDto search(@RequestBody SearchJourneyRequestDto request) {
         JourneySearchResult result = searchJourneyUseCase.execute(
@@ -45,6 +44,7 @@ public class JourneyController {
                 request.getArriveBySeconds()
         );
 
+        // stream().map().collect() is Java's way of converting every item in a list from one type to another
         List<JourneyOptionDto> options = result.getOptions().stream()
                 .map(this::toDto)
                 .collect(Collectors.toList());
@@ -52,6 +52,7 @@ public class JourneyController {
         return new JourneySearchResponseDto(options, result.getCarBaselineCo2Grams(), result.getCarRouteGeometry());
     }
 
+    // Converts the internal domain object to a DTO — keeps the domain model out of the HTTP response
     private JourneyOptionDto toDto(JourneyOption option) {
         List<StopDto> stops = option.getStops().stream()
                 .map(this::toStopDto)

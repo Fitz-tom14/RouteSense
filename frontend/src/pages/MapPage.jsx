@@ -16,7 +16,7 @@ function StopMarker({ stop, live }) {
   const [departures, setDepartures] = useState(null);
   const [loading, setLoading]       = useState(false);
 
-  // When the popup is opened, if departures haven't been loaded yet, it fetches the upcoming departures for that stop using the fetchDepartures function. It shows a loading state while fetching, and handles errors by setting departures to an empty array. The popup displays the stop name, mode badge, and a list of upcoming departures with route names and minutes until departure.
+  // Lazy-loads departures the first time the popup opens — no point fetching until the user actually taps the stop
   async function handlePopupOpen() {
     if (departures !== null) return;
     setLoading(true);
@@ -32,7 +32,6 @@ function StopMarker({ stop, live }) {
 
   const color = MODE_COLOR[stop.mode] || "#3b82f6";
 
-  // Renders a CircleMarker for the stop location, with a Popup that shows the stop name, mode badge, and upcoming departures when opened. The marker color corresponds to the transport mode, and the popup content updates based on the loading state and fetched departure data.
   return (
     <CircleMarker
       center={[stop.latitude, stop.longitude]}
@@ -67,8 +66,7 @@ function StopMarker({ stop, live }) {
   );
 }
 
-// MapPage component displays an interactive map with public transport stops based on the selected location and filters.
-// It includes a top bar for location selection, a filter panel for transport modes and live/static toggle, and a bottom navigation for switching between pages. The map shows stops as colored markers, and clicking on a marker opens a popup with stop details and upcoming departures.
+// Shows a Leaflet map with stop markers. Re-fetches stops from the backend whenever location or selected modes change.
 function MapPage({ activePage, onNavigate }) {
   const [location, setLocation]           = useState("Galway");
   const live = true;
@@ -82,11 +80,12 @@ function MapPage({ activePage, onNavigate }) {
     Cork:   [51.8985, -8.4756],
   };
 
+  // useEffect re-runs whenever location or selectedModes changes — the dependency array [location, selectedModes, live] controls this
   useEffect(() => {
     setLoadingStops(true);
     fetchStops({ location, modes: selectedModes, live })
       .then((data) => setStops(Array.isArray(data) ? data : []))
-      .catch(() => setStops([]))
+      .catch(() => setStops([]))       // if the API call fails, just show an empty map rather than crashing
       .finally(() => setLoadingStops(false));
   }, [location, selectedModes, live]);
 

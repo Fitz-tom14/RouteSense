@@ -1,5 +1,7 @@
-const AUTH_KEY = "routesense_auth"; // Key for storing auth session in localStorage
-const USERS_KEY = "routesense_users"; // Key for storing registered users in localStorage
+// Client-side auth only — users and sessions live in localStorage, not a server.
+// Passwords aren't hashed. This is fine for a dev prototype but would need real backend auth in production.
+const AUTH_KEY = "routesense_auth";   // stores the active session (email + name)
+const USERS_KEY = "routesense_users"; // stores all registered accounts
 
 // Get all registered users from storage
 function getUsers() {

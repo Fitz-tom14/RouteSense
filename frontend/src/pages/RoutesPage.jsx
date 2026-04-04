@@ -1,5 +1,4 @@
-// RoutesPage component allows users to search for journey options between an origin and destination, either by typing stop names or picking points on the map. It fetches route options from the backend and displays them in a list, along with a map visualization of the routes. The user can also specify an "arrive by" time to filter routes accordingly. The page includes error handling and loading states, and compares public transport options against a car baseline in terms of duration and CO₂ emissions.
-// The component manages a variety of state variables to track user input, search results, loading states, and errors. It includes functions to handle user interactions such as changing the origin/destination inputs, picking locations on the map, and initiating the search for routes. The search results are displayed in a list format, and the map shows the routes visually with different colors for public transport and car options.
+// Main journey search page — user types or pins a start and end point, hits Go, and sees ranked route options with CO₂ comparison.
 
 import { useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from "react-leaflet";
@@ -50,13 +49,11 @@ function buildSearchRequestBody(originStop, originPin, destinationStop, destinat
 // The backend can return either a plain array or an object with an "options" array.
 // Separates public transport options from the car baseline and extracts the car CO2 figure.
 function parseJourneyResponse(data) {
-  // The backend response can be in two formats: either a simple array of route options, or an object containing an "options" array along with additional metadata like the car baseline CO₂.
-  //  We handle both cases to maintain flexibility in the backend response format.
-  const options = Array.isArray(data) ? data : data?.options;// Normalize the options to an array, defaulting to an empty array if the data is not in the expected format, to avoid errors when rendering the routes list.
+  // Backend can return a plain array or an object with an "options" key — handle both
+  const options = Array.isArray(data) ? data : data?.options;
   const normalizedOptions = Array.isArray(options) ? options : [];
 
-  // We separate out the car baseline option from the public transport options based on the "type" field,
-  // which allows us to display them differently in the UI and use the car baseline CO₂ for comparison.
+  // Split out the CAR_BASELINE option so it can be displayed separately from the public transport results
   const carOption =
     normalizedOptions.find((option) => option?.type === "CAR_BASELINE") || null;
   const ptOptions = normalizedOptions.filter(
@@ -103,7 +100,7 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
   const [carGeometry, setCarGeometry] = useState(null);
   const [walkGeometries, setWalkGeometries] = useState([]);
 
-  // Fetches stop suggestions from the backend based on the query, and updates the options and loading state accordingly.
+  // Shared helper used by both origin and destination inputs — keeps the autocomplete logic in one place
   async function fetchStopSuggestions(query, setOptions, setLoadingFlag) {
     const trimmed = (query || "").trim();
     if (trimmed.length < 2) {
@@ -131,26 +128,22 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
     }
   }
 
-  // Handles changes to the origin input field, updating state and fetching new suggestions with debouncing to avoid excessive requests.
+  // Debounce — waits 250ms after the user stops typing before hitting the backend, avoids a request on every keystroke
   function onOriginChange(value) {
     setOriginText(value);
     setOriginStop(null);
     setOriginPin(null); // typing clears any map pin
 
-    // Clear any existing debounce timer before starting a new one
     if (originDebounceRef.current) {
       clearTimeout(originDebounceRef.current);
     }
 
-    // Start a new debounce timer to fetch stop suggestions after a short delay
-    // This allows the user to type without triggering a request on every keystroke, improving performance and reducing load on the backend.
     originDebounceRef.current = setTimeout(() => {
       fetchStopSuggestions(value, setOriginOptions, setLoadingOrigin);
     }, 250);
   }
 
-  // Handles picking a location on the map as the origin, setting the originPin state and clearing any selected origin stop or text input, 
-  // since the user is choosing to specify their origin via the map instead of typing a stop name.
+  // User dropped a pin on the map instead of typing — store the coords and clear the text input
   function handleMapPick(coords) {
     setOriginPin(coords);
     setOriginStop(null);
@@ -158,7 +151,6 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
     setOriginOptions([]);
   }
 
-  // Clears the origin pin selection, allowing the user to go back to typing an origin stop if they change their mind after picking a point on the map.
   function clearOriginPin() {
     setOriginPin(null);
   }
@@ -174,7 +166,7 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
     setDestinationPin(null);
   }
 
-  // Handles changes to the destination input field, updating state and fetching new suggestions with debouncing to avoid excessive requests.
+  // Same debounce pattern as origin
   function onDestinationChange(value) {
     setDestinationText(value);
     setDestinationStop(null);
@@ -189,21 +181,20 @@ function RoutesPage({ activePage, onNavigate, onSelectJourney }) {
     }, 250);
   }
 
-  // Handles picking an origin stop from the autocomplete suggestions, updating the selected origin stop and text, and clearing the options dropdown.
+  // User tapped a suggestion from the dropdown — lock it in and close the list
   function pickOrigin(stop) {
     setOriginStop(stop);
     setOriginText(stop.name || stop.id);
     setOriginOptions([]);
   }
 
-  // Handles picking a destination stop from the autocomplete suggestions, updating the selected destination stop and text, and clearing the options dropdown.
   function pickDestination(stop) {
     setDestinationStop(stop);
     setDestinationText(stop.name || stop.id);
     setDestinationOptions([]);
   }
 
-  // Handles the "Go" button click, validating inputs and making a request to the backend to search for journey options based on the selected origin and destination.
+  // Triggered when user hits Go — validates that both origin and destination are set, then calls the backend
   async function handleGo() {
     setHasSearched(true);
     setError("");

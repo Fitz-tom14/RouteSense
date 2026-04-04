@@ -1,12 +1,9 @@
-// React component to display a summary of the selected journey, comparing the CO₂ emissions of the public transport route to a baseline car journey. Shows a simple bar chart and percentage saved.
+// Compares the selected route's CO₂ against the car baseline that comes back from the API.
 function formatCo2(grams) {
   const g = Math.max(0, grams || 0);
   return g >= 1000 ? `${(g / 1000).toFixed(1)} kg` : `${Math.round(g)} g`;
 }
 
-// Props:
-// - journey: the selected journey object containing details like co2Grams and transfers
-// - carBaselineCo2Grams: the estimated CO₂ emissions for the same journey if taken by car, used for comparison
 function SummaryCard({ journey, carBaselineCo2Grams }) {
   if (!journey) {
     return (
@@ -20,12 +17,12 @@ function SummaryCard({ journey, carBaselineCo2Grams }) {
     );
   }
 
-  // Calculates the CO₂ emissions for the selected public transport route and the baseline car journey, then computes the percentage of CO₂ saved by taking public transport instead of driving. Displays this information in a simple bar chart format, along with the exact CO₂ values and the number of transfers if available.
+  // Bar widths are percentages of the highest CO₂ value — no chart library needed, just CSS width
   const ptCo2 = journey.co2Grams || 0;
   const carCo2 = carBaselineCo2Grams || 0;
-  const co2Saved = Math.max(0, carCo2 - ptCo2);
-  const pctSaved = carCo2 > 0 ? Math.round((co2Saved / carCo2) * 100) : 0;
-  const maxCo2 = Math.max(carCo2, ptCo2, 1);
+  const co2Saved = Math.max(0, carCo2 - ptCo2);                              // how many grams saved vs driving
+  const pctSaved = carCo2 > 0 ? Math.round((co2Saved / carCo2) * 100) : 0;  // percentage saved, shown as "X% less CO₂"
+  const maxCo2 = Math.max(carCo2, ptCo2, 1); // the 1 prevents division by zero if both values happen to be 0
 
   return (
     <div className="card summary-card">
@@ -56,6 +53,7 @@ function SummaryCard({ journey, carBaselineCo2Grams }) {
         )}
 
         {journey.transfers !== undefined && (
+          // !== 1 ? 's' : '' handles pluralisation — "1 transfer" vs "2 transfers"
           <div style={{ fontSize: 12, color: '#6b7788', marginTop: 6 }}>
             {journey.transfers} transfer{journey.transfers !== 1 ? 's' : ''}
           </div>

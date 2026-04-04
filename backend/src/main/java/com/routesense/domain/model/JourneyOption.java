@@ -2,8 +2,7 @@ package com.routesense.domain.model;
 
 import java.util.List;
 
-/// Domain model for a single journey option returned by the journey search.
-//   This can represent either a scheduled journey (with detailed leg info) or a fallback Dijkstra path (without leg details, just a sequence of stops).
+// One journey option from the search — either a scheduled GTFS journey (with leg detail) or a fallback Dijkstra path (stops only).
 public class JourneyOption {
     private final JourneyOptionType type;// "SCHEDULED" or "FALLBACK_DIJKSTRA"
     private final List<Stop>        stops;// the sequence of stops in this journey, including origin and destination
@@ -16,7 +15,7 @@ public class JourneyOption {
     private final String            modeSummary;// a short summary of the modes used in this journey, e.g. "Bus → Train → Walk"
     private final List<JourneyLeg>  legs; // empty for fallback Dijkstra paths
 
-    // Constructor with legs (for scheduled journeys) and without legs (for fallback Dijkstra paths)
+    // Fallback Dijkstra paths don't have leg detail, so they use this constructor and get an empty legs list.
     public JourneyOption(
             JourneyOptionType type,
             List<Stop>        stops,
@@ -28,11 +27,10 @@ public class JourneyOption {
             String            recommendationReason,
             String            modeSummary
     ) {
-        // For fallback Dijkstra paths, we won't have leg details, so we can set legs to an empty list.
         this(type, stops, totalDurationSeconds, transfers, co2Grams,score, recommended, recommendationReason, modeSummary, List.of());
     }
 
-    // Full constructor with legs (used for scheduled journeys)
+    // Scheduled journeys use this one — legs carry the per-segment service name, times, and shape points.
     public JourneyOption(
             JourneyOptionType type,
             List<Stop>        stops,
@@ -45,7 +43,6 @@ public class JourneyOption {
             String            modeSummary,
             List<JourneyLeg>  legs
     ) {
-        // Basic validation (e.g. total duration should be positive, score should be between 0 and 1, etc.) could be added here if desired.
         this.type                 = type;
         this.stops                = stops;
         this.totalDurationSeconds = totalDurationSeconds;
@@ -55,7 +52,7 @@ public class JourneyOption {
         this.recommended          = recommended;
         this.recommendationReason = recommendationReason;
         this.modeSummary          = modeSummary;
-        this.legs                 = legs != null ? legs : List.of();
+        this.legs                 = legs != null ? legs : List.of(); // guard — always an empty list rather than null
     }
 
     public JourneyOptionType  getType()                 { return type; }
