@@ -26,7 +26,7 @@ RouteSense/
 The backend follows Clean Architecture with four layers:
 
 - **`domain/`** — core entities: `Stop`, `TransportStop`, `TransportMode`, `StopEdge`, `JourneyOption`, `JourneyLeg`, `Departure`, `JourneyRecord`
-- **`application/`** — use cases: `SearchJourneyUseCase`, `GetHomeSummaryUseCase`, `GetMapStopsUseCase`, `GetStopDeparturesUseCase`, `SearchStopsUseCase`, `SaveJourneyUseCase`, `GetJourneyHistoryUseCase`; ports: `StopGraphRepository`, `MapDataSource`, `JourneyHistoryRepository`
+- **`application/`** — use cases: `SearchJourneyUseCase`, `GetMapStopsUseCase`, `GetStopDeparturesUseCase`, `SearchStopsUseCase`, `SaveJourneyUseCase`, `GetJourneyHistoryUseCase`; ports: `StopGraphRepository`, `MapDataSource`, `JourneyHistoryRepository`
 - **`infrastructure/`** — `GtfsGraphLoader`, `InMemoryStopGraphRepository`, `InMemoryMapDataSource`, `JpaJourneyHistoryAdapter`, `OpenRouteServiceClient`, `EmissionsCalculator`
 - **`web/`** — REST controllers, DTOs, CORS config
 
@@ -35,7 +35,6 @@ The backend follows Clean Architecture with four layers:
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/health` | Health check |
-| `GET` | `/api/home` | Home page KPIs for a selected journey |
 | `POST` | `/api/journeys/search` | Journey search (Dijkstra routing) |
 | `POST` | `/api/journeys/save` | Save a completed journey to history |
 | `GET` | `/api/journeys/history` | Retrieve saved journey history |

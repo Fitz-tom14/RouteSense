@@ -18,12 +18,12 @@ public class EmissionsCalculator {
 
     private static final double EARTH_RADIUS_KM = 6371.0;// Average radius of the Earth in kilometers.
 
-    // Multiplies distance by the emission rate for that mode to get total grams of CO2 for one leg
+    // *Multiplies distance by the emission rate for that mode to get total grams of CO2 for one leg
     public double estimateEdgeCo2Grams(double distanceKm, TransportMode mode) {
         return distanceKm * emissionFactor(mode);
     }
 
-    // Same calculation but always uses the car rate — used to build the "by car" comparison on the frontend
+    // *Same calculation but always uses the car rate — used to build the "by car" comparison on the frontend
     public double estimateCarCo2Grams(double roadDistanceKm) {
         return roadDistanceKm * CAR_G_PER_KM;
     }
