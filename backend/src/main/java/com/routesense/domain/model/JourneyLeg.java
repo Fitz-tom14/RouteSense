@@ -2,7 +2,7 @@ package com.routesense.domain.model;
 
 import java.util.List;
 
-// Represents a single leg of a journey, e.g. "Bus 405 from westside to Galway (Ceannt), departing at 14:30 and arriving at 15:45".
+// Represents a single leg of a journey A to B,
 public class JourneyLeg {
 
     private final String serviceName;   // e.g. "Bus 401", "Train IE" — used on the card

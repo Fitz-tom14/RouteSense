@@ -2,6 +2,7 @@ package com.routesense.domain.model;
 
 import java.util.List;
 
+//This is one full route option shown to the user.
 // One journey option from the search — either a scheduled GTFS journey (with leg detail) or a fallback Dijkstra path (stops only).
 public class JourneyOption {
     private final JourneyOptionType type;// "SCHEDULED" or "FALLBACK_DIJKSTRA"

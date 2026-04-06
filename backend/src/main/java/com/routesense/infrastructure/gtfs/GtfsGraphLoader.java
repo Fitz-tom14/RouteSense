@@ -36,7 +36,7 @@ public class GtfsGraphLoader {
     private static final int    DEFAULT_EDGE_TIME_SECONDS  = 120;
     private static final double MAX_FOOTPATH_DISTANCE_KM   = 0.3;  // 300 m — max walking distance for a mid-journey transfer
     private static final double WALK_SPEED_KMH             = 4.8;  // walking speed used to compute footpath travel time
-    private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class); 
+    private static final Logger LOGGER = LoggerFactory.getLogger(GtfsGraphLoader.class);
 
     private Map<String, Stop> stops = Map.of();// stopId → Stop
     private Map<String, List<StopEdge>> adjacencyList = Map.of();// stopId → list of outgoing edges (sorted by toStopId for deterministic iteration order)
@@ -45,7 +45,7 @@ public class GtfsGraphLoader {
     private Map<String, List<double[]>> routeShapes = Map.of(); // routeId → ordered [lat,lon] shape points (train routes only)
     private Map<String, List<FootpathEdge>> footpaths = Map.of(); // stopId → nearby stops reachable on foot
 
-    @PostConstruct
+    @PostConstruct// Load the GTFS graph at startup.  This is a heavy operation but it only happens once and makes all subsequent queries fast.
     public void loadGraph() {
         Map<String, Stop> parsedStops = loadStops(); // stopID - stops
         LoadedEdgeData edgeData = loadEdges(parsedStops);

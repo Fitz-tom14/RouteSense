@@ -2,7 +2,7 @@ package com.routesense.domain.model;
 
 //Domain model representing a transport stop that can be shown on the map.
 //It contains the stop's ID, name, location (latitude and longitude), and the transport mode (e.g., bus, tram, metro).
- 
+
 
 public class TransportStop {
     private final String id;

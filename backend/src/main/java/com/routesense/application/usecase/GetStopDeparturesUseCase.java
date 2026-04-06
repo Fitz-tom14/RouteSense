@@ -11,6 +11,7 @@ import java.util.List;
 @Component
 public class GetStopDeparturesUseCase {
 
+    // The MapDataSource is injected into the use case, allowing it to fetch the necessary departure data for a given stop.
     private final MapDataSource mapDataSource;
 
     public GetStopDeparturesUseCase(MapDataSource mapDataSource) {

@@ -110,6 +110,5 @@ public class OpenRouteServiceClient {
     
      //The result of a successful driving route lookup.
      //geometry is a list of [lat, lon] pairs ready for Leaflet, or null if unavailable.
-     
     public record CarRoute(int durationSeconds, double distanceKm, List<List<Double>> geometry) {}
 }

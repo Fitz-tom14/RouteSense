@@ -1,7 +1,3 @@
-
-
-
-
 package com.routesense.web.controller;
 
 import com.routesense.application.usecase.GetMapStopsUseCase;

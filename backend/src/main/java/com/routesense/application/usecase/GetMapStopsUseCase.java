@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Set;
 
 // This use case is responsible for fetching the transport stops to be displayed on the Map page, based on the user's selected location and transport mode filters.
-// It interacts with the MapDataSource to retrieve the relevant data, which is currently mocked for development purposes.
+// It interacts with the MapDataSource to retrieve the relevant data.
 @Component
 public class GetMapStopsUseCase {
 

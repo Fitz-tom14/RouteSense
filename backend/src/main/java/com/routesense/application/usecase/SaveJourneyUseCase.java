@@ -2,7 +2,7 @@ package com.routesense.application.usecase;
 
 import com.routesense.application.port.JourneyHistoryRepository;
 import com.routesense.domain.model.JourneyRecord;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Service;// This use case class is responsible for saving a completed journey record to the user's journey history.
 
 // Application layer — talks to the port interface only, not JPA directly, so the domain stays clean.
 @Service

@@ -27,7 +27,7 @@ public class HistoryController {
     }
 
     // Endpoint for saving a new journey record. It accepts a SaveJourneyRequestDto object in the request body, converts it to a JourneyRecord, and calls the save use case to persist it.
-    @PostMapping
+    @PostMapping//save
     public ResponseEntity<Void> save(@RequestBody SaveJourneyRequestDto dto) {
         JourneyRecord record = new JourneyRecord(
                 dto.timestamp(),
@@ -45,7 +45,7 @@ public class HistoryController {
     }
 
     // Endpoint for retrieving the journey history for a specific user. It accepts a userId as a query parameter, calls the getHistory use case to fetch the data, and returns a list of JourneyRecordDto objects in the response.
-    @GetMapping
+    @GetMapping//history?userId=123
     public List<JourneyRecordDto> getHistory(@RequestParam String userId) {
         return getHistory.execute(userId).stream()
                 .map(r -> new JourneyRecordDto(

@@ -12,8 +12,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 // In production, this should be locked down to only allow requests from the actual frontend domain.
 
 //Marks this as a Spring configuration class that runs on startup
-@Configuration
-public class CorsConfig implements WebMvcConfigurer {
+@Configuration//runs when app starts up
+public class CorsConfig implements WebMvcConfigurer { //customise web behaviour
 
     private final CorsProperties corsProperties;
 
@@ -23,8 +23,8 @@ public class CorsConfig implements WebMvcConfigurer {
     // override the addCorsMapping method
     @Override
     public void addCorsMappings(@NonNull CorsRegistry registry) {
-        String[] origins = corsProperties.getAllowedOrigins().split(",");
-        registry.addMapping("/api/**")
+        String[] origins = corsProperties.getAllowedOrigins().split(","); // reads allowed origins from properties and splits them into an array
+        registry.addMapping("/api/**")// applies rules to all endpoints under /api
                 .allowedOrigins(Arrays.stream(origins).toArray(String[]::new))
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                 .allowedHeaders("*");

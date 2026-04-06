@@ -12,6 +12,7 @@ import java.util.Map;
 @Service
 public class SearchStopsUseCase {
 
+    // The StopGraphRepository is injected into the use case, allowing it to access the graph of stops and perform search operations on it.
     private final StopGraphRepository stopGraphRepository;
 
     public SearchStopsUseCase(StopGraphRepository stopGraphRepository) {
