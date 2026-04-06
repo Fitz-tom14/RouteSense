@@ -1,7 +1,7 @@
 // src/components/BottomNav.jsx
 // A simple bottom navigation component for the RouteSense app
 
-import React from "react"; //impor React library for building the component
+import React from "react"; //import React library for building the component
 import "./BottomNav.css"; // Import styles for the bottom navigation
 
 function BottomNav({ activePage, onNavigate }) {
