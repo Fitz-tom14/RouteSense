@@ -18,7 +18,6 @@ RouteSense/
 | Frontend | React 18.2.0, Vite 5.0.8 |
 | Maps | Leaflet 1.9.4, react-leaflet 4.2.1 |
 | Transit data | GTFS flat files (loaded in-memory at startup) |
-| Persistence | H2 (default) or PostgreSQL via Spring Data JPA |
 | Distance API | OpenRouteService (optional, falls back to haversine) |
 
 ## Architecture
